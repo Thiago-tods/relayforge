@@ -26,15 +26,10 @@ and append-only audit events (ADRs 0008 to 0014).
 
 **Not implemented (follow-ups):**
 
-- **Login rate limiting and account lockout.** Argon2id with a bounded number of concurrent hashes
-  limits resource use, but nothing yet slows credential guessing. A PostgreSQL-backed counter per
-  account and per network address is planned; an in-memory limiter was rejected because it would
-  silently stop protecting a multi-instance deployment.
 - Email verification, password reset and MFA.
 - Breached-password screening.
 - Automated invitation delivery (tokens are returned once to the inviting caller).
 
-Treat the API as unsuitable for exposure to the public internet until login rate limiting exists.
 
 ## Frontend dependency audit policy
 
@@ -43,3 +38,31 @@ Development-only tooling is audited in an informational step that does not block
 advisories there can be published before a patched release exists (for example `picomatch`
 GHSA-fc5q-39xc-vjpf on 2026-11-17, no fixed version at the time). Re-enable blocking on all
 dependencies once a patched release is available.
+
+## Webhook ingestion security (Phase 3)
+
+Implemented: HMAC-SHA256 request signing with constant-time verification, strict timestamp window
+(5 minutes), PostgreSQL-enforced idempotency, signing secrets encrypted with AES-256-GCM and bound to
+their endpoint, secrets shown once, 1 MiB body limit, shared rate limits in PostgreSQL for ingestion
+and for failed logins (ADR 0021), and an atomic event + outbox commit (ADRs 0015 to 0021).
+
+**Known limitations (read before exposing the API publicly):**
+
+- **Public production readiness is not claimed.** Several controls below are missing.
+- **Client address behind proxies.** Per-address limits use the TCP peer address and ignore
+  `X-Forwarded-For`. Behind a reverse proxy all clients share one address, so those limits become
+  global. A trusted-proxy setting is not implemented.
+- **No TLS in the application.** Terminate TLS in front of it. Without TLS, secrets, signatures and
+  session cookies cross the network in clear text.
+- **The idempotency key is not signed** (ADR 0018): a captured request can be replayed with a new key
+  inside the five-minute window.
+- **The encryption key** is a single static key (ADR 0016). If lost, all signing secrets are
+  unrecoverable; if leaked together with a database copy, all secrets are exposed. Key rotation
+  tooling is not implemented.
+- **Account lockout** is possible for anyone who knows an email address (failed-login counters).
+- **Fixed rate-limit windows** allow bursts of up to twice the limit across a window boundary.
+- **No distributed denial-of-service protection**, no web application firewall.
+- **`/metrics` is unauthenticated** and disabled by default; keep it on a private network.
+- **Events are never deleted** and the outbox is never drained: there is no retention policy or
+  publisher yet.
+- Email verification, password reset, MFA and automated invitation delivery remain unimplemented.

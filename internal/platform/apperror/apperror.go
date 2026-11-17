@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // Error is an error with a stable machine-readable code and an HTTP status.
@@ -13,6 +15,8 @@ type Error struct {
 	Code    string
 	Message string
 	Err     error
+	// RetryAfter, when positive, is sent as a Retry-After header (rate limiting).
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {
@@ -60,6 +64,9 @@ func Write(w http.ResponseWriter, err error) {
 	b.Error.Code = ae.Code
 	b.Error.Message = ae.Message
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if ae.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int((ae.RetryAfter+time.Second-1)/time.Second)))
+	}
 	w.WriteHeader(ae.Status)
 	_ = json.NewEncoder(w).Encode(b)
 }

@@ -54,7 +54,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &req); err != nil {
 		return err
 	}
-	res, err := a.svc.Login(r.Context(), req.Email, req.Password)
+	res, err := a.svc.LoginFromIP(r.Context(), clientIP(r), req.Email, req.Password)
 	if err != nil {
 		return err
 	}

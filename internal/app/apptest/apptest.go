@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/database/dbtest"
 	"github.com/Thiago-tods/relayforge/internal/identity"
+	"github.com/Thiago-tods/relayforge/internal/ingest"
+	"github.com/Thiago-tods/relayforge/internal/observability"
+	"github.com/Thiago-tods/relayforge/internal/secretbox"
 	"github.com/Thiago-tods/relayforge/internal/tenancy"
 )
 
@@ -43,12 +47,21 @@ func (c *Clock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// Env is a migrated database with a service on top of it.
+// Env is a migrated database with services on top of it.
 type Env struct {
-	Pool  *database.Pool
-	Svc   *app.Service
-	Clock *Clock
+	Pool   *database.Pool
+	Svc    *app.Service
+	Ingest *ingest.Service
+	Box    *secretbox.Box
+	Clock  *Clock
+	// Metrics collects the ingestion metrics of this environment.
+	Metrics *observability.Registry
+	// IngestConfig is the configuration Ingest was built with.
+	IngestConfig ingest.Config
 }
+
+// TestKey is a fixed 32-byte key for tests only. It protects nothing real.
+var TestKey = []byte("0123456789abcdef0123456789abcdef")
 
 // New creates an isolated database, applies all migrations and builds a service.
 func New(t *testing.T) *Env {
@@ -75,12 +88,23 @@ func New(t *testing.T) *Env {
 		t.Fatalf("migrate: %v", err)
 	}
 
+	box, err := secretbox.New(TestKey, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	clock := &Clock{now: time.Now().UTC()}
-	svc, err := app.New(pool, identity.NewHasher(FastArgon2Params), app.DefaultConfig(), clock.Now, log)
+	appCfg := app.DefaultConfig()
+	appCfg.Box = box
+	svc, err := app.New(pool, identity.NewHasher(FastArgon2Params), appCfg, clock.Now, log)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
-	return &Env{Pool: pool, Svc: svc, Clock: clock}
+	reg := observability.NewRegistry()
+	ingestCfg := ingest.DefaultConfig()
+	ingestCfg.PerEndpointPerMinute = 100000
+	ingestCfg.PerIPPerMinute = 100000
+	ing := ingest.NewService(pool, box, ingestCfg, clock.Now, log, ingest.NewMetrics(reg))
+	return &Env{Pool: pool, Svc: svc, Ingest: ing, Box: box, Clock: clock, Metrics: reg, IngestConfig: ingestCfg}
 }
 
 // Principal authenticates the session token of an AuthResult.
@@ -151,4 +175,39 @@ func (e *Env) Count(t *testing.T, sql string, args ...any) int {
 		t.Fatalf("count %q: %v", sql, err)
 	}
 	return n
+}
+
+// CreateEndpoint creates an ingestion endpoint in the user's personal organization.
+func (e *Env) CreateEndpoint(t *testing.T, u User) app.EndpointWithSecret {
+	t.Helper()
+	return e.CreateEndpointIn(t, u, u.Org.ID)
+}
+
+// CreateEndpointIn creates an ingestion endpoint in orgID as the given user.
+func (e *Env) CreateEndpointIn(t *testing.T, u User, orgID string) app.EndpointWithSecret {
+	t.Helper()
+	res, err := e.Svc.CreateEndpoint(context.Background(), u.Principal, orgID, "Test endpoint")
+	if err != nil {
+		t.Fatalf("create endpoint: %v", err)
+	}
+	return res
+}
+
+// Signed builds a correctly signed JSON request timestamped with the fake clock.
+func (e *Env) Signed(secret string, body []byte, idempotencyKey string) ingest.Request {
+	ts := strconv.FormatInt(e.Clock.Now().Unix(), 10)
+	return ingest.Request{
+		ContentType: "application/json", Timestamp: ts, Signature: ingest.Sign(secret, ts, body),
+		IdempotencyKey: idempotencyKey, Body: body,
+	}
+}
+
+// Send runs the two ingestion phases, as the HTTP handler does.
+func (e *Env) Send(publicID string, req ingest.Request) (ingest.Result, error) {
+	ctx := context.Background()
+	ep, err := e.Ingest.Lookup(ctx, publicID, "")
+	if err != nil {
+		return ingest.Result{}, err
+	}
+	return e.Ingest.Accept(ctx, ep, req)
 }

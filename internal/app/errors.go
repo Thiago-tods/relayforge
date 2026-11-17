@@ -28,6 +28,7 @@ var (
 	ErrInvitationExists = apperror.New(http.StatusConflict, "invitation_exists", "a pending invitation already exists for this email")
 	ErrSelfModification = apperror.New(http.StatusConflict, "cannot_modify_self", "you cannot change or remove your own membership")
 	ErrUseTransfer      = apperror.New(http.StatusConflict, "use_ownership_transfer", "the owner role can only be changed with an ownership transfer")
+	ErrEndpointRevoked  = apperror.New(http.StatusConflict, "endpoint_revoked", "the ingestion endpoint is revoked")
 	ErrAlreadyOwner     = apperror.New(http.StatusConflict, "already_owner", "the target member is already the owner")
 	// ErrInvalidInvitation is returned for unknown, expired, revoked, used and
 	// wrong-recipient invitations alike. The wrapped cause tells them apart for

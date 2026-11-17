@@ -48,6 +48,16 @@ const (
 	PermMembersRemove      Permission = "members:remove"
 	PermOwnershipTransfer  Permission = "ownership:transfer"
 	PermAuditView          Permission = "audit:view"
+
+	// Ingestion endpoints and events (Phase 3).
+	PermEndpointsRead     Permission = "endpoints:read"
+	PermEndpointsCreate   Permission = "endpoints:create"
+	PermEndpointsUpdate   Permission = "endpoints:update" // rename
+	PermEndpointsPause    Permission = "endpoints:pause"  // pause and activate
+	PermEndpointsRotate   Permission = "endpoints:rotate_secret"
+	PermEndpointsRevoke   Permission = "endpoints:revoke"
+	PermEventsList        Permission = "events:list"         // metadata only
+	PermEventsReadPayload Permission = "events:read_payload" // raw payload
 )
 
 // permissions is the authorization matrix. PermMembersChangeRole and
@@ -58,14 +68,24 @@ var permissions = map[Role]map[Permission]bool{
 		PermOrganizationView: true, PermOrganizationUpdate: true, PermMembersList: true,
 		PermMembersInvite: true, PermInvitationsList: true, PermInvitationsRevoke: true,
 		PermMembersChangeRole: true, PermMembersRemove: true, PermOwnershipTransfer: true, PermAuditView: true,
+		PermEndpointsRead: true, PermEndpointsCreate: true, PermEndpointsUpdate: true, PermEndpointsPause: true,
+		PermEndpointsRotate: true, PermEndpointsRevoke: true, PermEventsList: true, PermEventsReadPayload: true,
 	},
 	RoleAdmin: {
 		PermOrganizationView: true, PermOrganizationUpdate: true, PermMembersList: true,
 		PermMembersInvite: true, PermInvitationsList: true, PermInvitationsRevoke: true,
 		PermMembersChangeRole: true, PermMembersRemove: true, PermAuditView: true,
+		PermEndpointsRead: true, PermEndpointsCreate: true, PermEndpointsUpdate: true, PermEndpointsPause: true,
+		PermEndpointsRotate: true, PermEndpointsRevoke: true, PermEventsList: true, PermEventsReadPayload: true,
 	},
-	RoleDeveloper: {PermOrganizationView: true, PermMembersList: true},
-	RoleViewer:    {PermOrganizationView: true, PermMembersList: true},
+	// Rotating a secret breaks every producer using the old one, and revocation is
+	// permanent, so both stay with OWNER and ADMIN.
+	RoleDeveloper: {
+		PermOrganizationView: true, PermMembersList: true,
+		PermEndpointsRead: true, PermEndpointsCreate: true, PermEndpointsUpdate: true, PermEndpointsPause: true,
+		PermEventsList: true, PermEventsReadPayload: true,
+	},
+	RoleViewer: {PermOrganizationView: true, PermMembersList: true, PermEndpointsRead: true, PermEventsList: true},
 }
 
 // Can reports whether role holds permission.

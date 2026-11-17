@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 3: webhook ingestion and transactional outbox)
+
+- Ingestion endpoints (`ingestion_endpoints`) with random public identifiers and AES-256-GCM encrypted
+  signing secrets (`RELAYFORGE_ENCRYPTION_KEY`, required by the API), shown once on creation or rotation.
+- `POST /api/v1/ingest/{publicId}`: HMAC-SHA256 signatures, strict timestamp window, 1 MiB limit,
+  PostgreSQL-enforced idempotency, and an atomic event + outbox commit before `202`.
+- Management API for endpoints (create, list, get, rename, pause, activate, rotate secret, revoke) and
+  organization-scoped event listing and retrieval, with new RBAC permissions.
+- Shared PostgreSQL rate limiting for ingestion and brute-force protection for login.
+- Prometheus-format metrics at `GET /metrics` (opt-in) and structured logging without secrets.
+- Migrations 00007 to 00010 and ADRs 0015 to 0021.
+
+### Changed
+
+- Login failures are now counted and limited (`429 rate_limited` with `Retry-After`).
+- `apperror.Error` supports `RetryAfter`; the HTTP server limits header size.
+
 ### Added (Phase 2: core domain)
 
 - Users, sessions, organizations, memberships, invitations and audit events (migrations 00002 to 00006).

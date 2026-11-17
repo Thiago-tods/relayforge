@@ -34,6 +34,15 @@ func TestPermissionMatrix(t *testing.T) {
 		PermMembersRemove:      {true, true, false, false},
 		PermOwnershipTransfer:  {true, false, false, false},
 		PermAuditView:          {true, true, false, false},
+		// Phase 3: ingestion endpoints and events.
+		PermEndpointsRead:     {true, true, true, true},
+		PermEndpointsCreate:   {true, true, true, false},
+		PermEndpointsUpdate:   {true, true, true, false},
+		PermEndpointsPause:    {true, true, true, false},
+		PermEndpointsRotate:   {true, true, false, false},
+		PermEndpointsRevoke:   {true, true, false, false},
+		PermEventsList:        {true, true, true, true},
+		PermEventsReadPayload: {true, true, true, false},
 	}
 	for perm, want := range matrix {
 		for i, role := range allRoles {

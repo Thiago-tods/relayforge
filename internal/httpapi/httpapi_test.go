@@ -13,6 +13,7 @@ import (
 
 	"github.com/Thiago-tods/relayforge/internal/app/apptest"
 	"github.com/Thiago-tods/relayforge/internal/httpapi"
+	"github.com/Thiago-tods/relayforge/internal/ingest"
 )
 
 type server struct {
@@ -22,8 +23,19 @@ type server struct {
 
 func newServer(t *testing.T, cookieSecure bool) *server {
 	t.Helper()
+	return newServerWith(t, cookieSecure, io.Discard, nil)
+}
+
+// newServerWith builds a server whose logs go to logs. A non-nil ingest service
+// replaces the default one (for example to apply low rate limits).
+func newServerWith(t *testing.T, cookieSecure bool, logs io.Writer, ing func(*apptest.Env) *ingest.Service) *server {
+	t.Helper()
 	env := apptest.New(t)
-	api := httpapi.New(env.Svc, slog.New(slog.NewTextHandler(io.Discard, nil)), cookieSecure)
+	svc := env.Ingest
+	if ing != nil {
+		svc = ing(env)
+	}
+	api := httpapi.New(env.Svc, svc, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})), cookieSecure)
 	ts := httptest.NewServer(api.Handler())
 	t.Cleanup(ts.Close)
 	return &server{env: env, url: ts.URL}

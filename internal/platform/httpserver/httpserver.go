@@ -19,15 +19,21 @@ type Check func(ctx context.Context) error
 //	GET /healthz  liveness: the process is running
 //	GET /readyz   readiness: all registered checks pass
 func NewHandler(log *slog.Logger, checks map[string]Check) http.Handler {
-	return NewHandlerWithAPI(log, checks, nil)
+	return NewHandlerWith(log, checks)
 }
 
-// NewHandlerWithAPI is NewHandler plus an application handler mounted under
-// /api/. A nil api serves only the health endpoints.
-func NewHandlerWithAPI(log *slog.Logger, checks map[string]Check, api http.Handler) http.Handler {
+// Mount attaches an application handler at a ServeMux pattern such as "/api/".
+type Mount struct {
+	Pattern string
+	Handler http.Handler
+}
+
+// NewHandlerWith is NewHandler plus application handlers. The health endpoints
+// are always registered first and cannot be shadowed.
+func NewHandlerWith(log *slog.Logger, checks map[string]Check, mounts ...Mount) http.Handler {
 	mux := http.NewServeMux()
-	if api != nil {
-		mux.Handle("/api/", api)
+	for _, m := range mounts {
+		mux.Handle(m.Pattern, m.Handler)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -64,6 +70,8 @@ func New(addr string, handler http.Handler, readHeaderTimeout time.Duration) *ht
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		// Bounds header memory; request bodies are limited separately by handlers.
+		MaxHeaderBytes: 64 << 10,
 	}
 }
 

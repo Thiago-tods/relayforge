@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Thiago-tods/relayforge/internal/app"
+	"github.com/Thiago-tods/relayforge/internal/ingest"
 	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
 )
 
@@ -37,13 +38,14 @@ const (
 // API holds the dependencies of the HTTP handlers.
 type API struct {
 	svc          *app.Service
+	ing          *ingest.Service
 	log          *slog.Logger
 	cookieSecure bool
 }
 
 // New creates the API. cookieSecure sets the Secure attribute on the session cookie.
-func New(svc *app.Service, log *slog.Logger, cookieSecure bool) *API {
-	return &API{svc: svc, log: log, cookieSecure: cookieSecure}
+func New(svc *app.Service, ing *ingest.Service, log *slog.Logger, cookieSecure bool) *API {
+	return &API{svc: svc, ing: ing, log: log, cookieSecure: cookieSecure}
 }
 
 // Handler returns the router for all /api/ paths.
@@ -78,6 +80,8 @@ func (a *API) Handler() http.Handler {
 
 	// Audit.
 	mux.HandleFunc("GET /api/v1/organizations/{organizationID}/audit-events", a.handle(a.authed(a.listAuditEvents)))
+
+	a.registerIngestionRoutes(mux)
 
 	mux.HandleFunc("/api/", a.handle(func(http.ResponseWriter, *http.Request) error { return app.ErrNotFound }))
 	return mux

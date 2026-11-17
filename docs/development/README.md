@@ -49,3 +49,16 @@ the server in `RELAYFORGE_TEST_DATABASE_URL` and drops it at cleanup. Use a disp
 - Use `apptest.New(t)` for integration tests: it creates a disposable migrated database and a
   service with cheap Argon2 parameters and a controllable clock.
 - Never log or return password hashes, session, CSRF or invitation tokens.
+
+## Working on ingestion
+
+- `apptest.Env` also provides `CreateEndpoint`, `Signed` (a correctly signed request using the fake
+  clock) and `Send` (runs `Lookup` then `Accept` like the HTTP handler).
+- Keep the request path ordered as in ADR 0017; do not parse or normalize the body before the signature
+  is verified, and never log bodies, signatures or secrets (there is a test that scans the logs).
+- Any new write on the accepted-event path must happen inside the same transaction as the event and
+  outbox rows.
+- Rate limits use `ratelimit.Hit` (count every request) or `Exceeded` + `Record` (count only failures).
+- Generate a local encryption key with
+  `[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))` and set
+  `RELAYFORGE_ENCRYPTION_KEY` in your shell. Never commit it.

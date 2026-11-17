@@ -12,14 +12,18 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Thiago-tods/relayforge/internal/app"
 	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/httpapi"
 	"github.com/Thiago-tods/relayforge/internal/identity"
+	"github.com/Thiago-tods/relayforge/internal/ingest"
 	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/platform/config"
 	"github.com/Thiago-tods/relayforge/internal/platform/httpserver"
+	"github.com/Thiago-tods/relayforge/internal/ratelimit"
+	"github.com/Thiago-tods/relayforge/internal/secretbox"
 )
 
 // Options selects the optional dependencies a process owns.
@@ -55,7 +59,7 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 	log := observability.NewLogger(stdout, cfg.LogLevel, cfg.LogFormat, service)
 
 	checks := map[string]httpserver.Check{}
-	var api http.Handler
+	var mounts []httpserver.Mount
 	if opts.RequireDatabase {
 		dbCfg, err := config.LoadDatabaseFrom(lookup)
 		if err == nil {
@@ -75,17 +79,51 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 		checks["postgres"] = pool.Check
 
 		if opts.ServeAPI {
-			svc, err := app.New(pool, identity.NewHasher(identity.DefaultArgon2Params),
-				app.Config{SessionLifetime: cfg.SessionLifetime, InvitationLifetime: app.DefaultConfig().InvitationLifetime}, nil, log)
+			if len(cfg.EncryptionKey) == 0 {
+				fmt.Fprintf(stderr, "%s: RELAYFORGE_ENCRYPTION_KEY is required (32 bytes, base64)\n", service)
+				return 2
+			}
+			box, err := secretbox.New(cfg.EncryptionKey, 1)
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: invalid RELAYFORGE_ENCRYPTION_KEY\n", service)
+				return 2
+			}
+			var registry *observability.Registry
+			if cfg.MetricsEnabled {
+				registry = observability.NewRegistry()
+				mounts = append(mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
+			}
+			appCfg := app.DefaultConfig()
+			appCfg.SessionLifetime = cfg.SessionLifetime
+			appCfg.Box = box
+			appCfg.LoginFailuresPerAccount = cfg.LoginFailuresPerAccount
+			appCfg.LoginFailuresPerIP = cfg.LoginFailuresPerIP
+			svc, err := app.New(pool, identity.NewHasher(identity.DefaultArgon2Params), appCfg, nil, log)
 			if err != nil {
 				log.Error("cannot initialize application service", "error", err)
 				return 1
 			}
-			api = httpapi.New(svc, log, cfg.CookieSecure).Handler()
+			ingestCfg := ingest.DefaultConfig()
+			ingestCfg.PerEndpointPerMinute = cfg.IngestPerEndpointPerMinute
+			ingestCfg.PerIPPerMinute = cfg.IngestPerIPPerMinute
+			ing := ingest.NewService(pool, box, ingestCfg, nil, log, ingest.NewMetrics(registry))
+			mounts = append(mounts, httpserver.Mount{Pattern: "/api/", Handler: httpapi.New(svc, ing, log, cfg.CookieSecure).Handler()})
+
+			// One owned goroutine removes expired rate-limit counters; it is stopped
+			// and awaited before the pool is closed.
+			prunerCtx, stopPruner := context.WithCancel(ctx)
+			prunerDone := make(chan struct{})
+			go func() {
+				defer close(prunerDone)
+				ratelimit.RunPruner(prunerCtx, pool, time.Hour, 24*time.Hour, func(err error) {
+					log.Warn("rate limit pruning failed", "error", err)
+				})
+			}()
+			defer func() { stopPruner(); <-prunerDone }()
 		}
 	}
 
-	srv := httpserver.New(cfg.HTTPAddr, httpserver.NewHandlerWithAPI(log, checks, api), cfg.ReadHeaderTimeout)
+	srv := httpserver.New(cfg.HTTPAddr, httpserver.NewHandlerWith(log, checks, mounts...), cfg.ReadHeaderTimeout)
 
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
