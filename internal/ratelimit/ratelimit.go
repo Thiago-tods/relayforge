@@ -13,8 +13,8 @@ package ratelimit
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
