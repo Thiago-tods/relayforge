@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Thiago-tods/relayforge/internal/app/apptest"
 	"github.com/Thiago-tods/relayforge/internal/identity"
 	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
+	"github.com/Thiago-tods/relayforge/internal/ratelimit"
 )
 
 var bg = context.Background()
@@ -190,6 +192,98 @@ func TestLoginFailuresAreIndistinguishable(t *testing.T) {
 	// Failed logins must not create sessions.
 	if n := env.Count(t, "SELECT count(*) FROM sessions"); n != 2 { // only the two registrations
 		t.Fatalf("sessions = %d, want 2", n)
+	}
+}
+
+func TestLoginRateLimitIsAtomicUnderConcurrentFailures(t *testing.T) {
+	env := apptest.New(t)
+	if _, err := register(t, env, validInput("concurrent-login@example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 20
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	unauthorized, limited, unexpected := 0, 0, 0
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := env.Svc.LoginFromIP(bg, "203.0.113.10", "concurrent-login@example.com", "incorrect password")
+			var ae *apperror.Error
+			if !errors.As(err, &ae) {
+				mu.Lock()
+				unexpected++
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			switch ae.Status {
+			case 401:
+				if ae.Code == "invalid_credentials" {
+					unauthorized++
+				} else {
+					unexpected++
+				}
+			case 429:
+				if ae.Code == "rate_limited" {
+					limited++
+				} else {
+					unexpected++
+				}
+			default:
+				unexpected++
+			}
+		}()
+	}
+	wg.Wait()
+
+	if unauthorized != 10 || limited != attempts-10 || unexpected != 0 {
+		t.Fatalf("concurrent login outcomes: unauthorized=%d limited=%d unexpected=%d; want 10, 10, 0",
+			unauthorized, limited, unexpected)
+	}
+	accountBucket := ratelimit.Bucket("login-account", "concurrent-login@example.com")
+	ipBucket := ratelimit.Bucket("login-ip", "203.0.113.10")
+	for _, bucket := range []string{accountBucket, ipBucket} {
+		if got := env.Count(t, "SELECT count FROM rate_limit_counters WHERE bucket = $1", bucket); got != 10 {
+			t.Errorf("bucket %q count = %d, want exactly 10", bucket, got)
+		}
+	}
+}
+
+func TestSuccessfulLoginReleasesItsRateLimitReservation(t *testing.T) {
+	env := apptest.New(t)
+	if _, err := register(t, env, validInput("reservation@example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 9; i++ {
+		_, err := env.Svc.LoginFromIP(bg, "203.0.113.11", "reservation@example.com", "wrong password")
+		var ae *apperror.Error
+		if !errors.As(err, &ae) || ae.Status != 401 || ae.Code != "invalid_credentials" {
+			t.Fatalf("failed login %d: got %v, want invalid_credentials", i+1, err)
+		}
+	}
+	if _, err := env.Svc.LoginFromIP(bg, "203.0.113.11", "reservation@example.com", apptest.Password); err != nil {
+		t.Fatalf("valid credentials should succeed at the limit boundary: %v", err)
+	}
+
+	// The successful attempt must release its reservation, leaving the nine
+	// actual failures counted. One more failure is allowed; the next is blocked.
+	_, err := env.Svc.LoginFromIP(bg, "203.0.113.11", "reservation@example.com", "wrong password")
+	var ae *apperror.Error
+	if !errors.As(err, &ae) || ae.Status != 401 {
+		t.Fatalf("tenth failed attempt: got %v, want invalid_credentials", err)
+	}
+	_, err = env.Svc.LoginFromIP(bg, "203.0.113.11", "reservation@example.com", "wrong password")
+	if !errors.As(err, &ae) || ae.Status != 429 || ae.Code != "rate_limited" {
+		t.Fatalf("eleventh failed attempt: got %v, want rate_limited", err)
+	}
+
+	accountBucket := ratelimit.Bucket("login-account", "reservation@example.com")
+	if got := env.Count(t, "SELECT count FROM rate_limit_counters WHERE bucket = $1", accountBucket); got != 10 {
+		t.Fatalf("account failure count = %d, want 10", got)
 	}
 }
 
