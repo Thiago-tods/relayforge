@@ -91,6 +91,27 @@ func Record(ctx context.Context, db database.Querier, bucket string, window time
 	return err
 }
 
+// Release removes one previously reserved attempt from the current bucket window.
+// It is used when a login succeeds or fails for an internal reason. Call it inside
+// the same transaction as the successful session creation when possible.
+func Release(ctx context.Context, db database.Querier, bucket string, window time.Duration, now time.Time) error {
+	start := windowStart(now, window)
+	tag, err := db.Exec(ctx,
+		"UPDATE rate_limit_counters SET count = count - 1 WHERE bucket = $1 AND window_start = $2 AND count > 1",
+		bucket, start)
+	if err != nil {
+		return fmt.Errorf("release rate limit reservation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := db.Exec(ctx,
+			"DELETE FROM rate_limit_counters WHERE bucket = $1 AND window_start = $2 AND count = 1",
+			bucket, start); err != nil {
+			return fmt.Errorf("delete released rate limit reservation: %w", err)
+		}
+	}
+	return nil
+}
+
 // Prune deletes counters whose window started before cutoff and returns how many.
 func Prune(ctx context.Context, db database.Querier, cutoff time.Time) (int64, error) {
 	tag, err := db.Exec(ctx, "DELETE FROM rate_limit_counters WHERE window_start < $1", cutoff)
