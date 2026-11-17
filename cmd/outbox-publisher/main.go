@@ -4,9 +4,9 @@ package main
 import (
 	"os"
 
-	"github.com/relayforge/relayforge/internal/platform/runtime"
+	"github.com/Thiago-tods/relayforge/internal/platform/runtime"
 )
 
 func main() {
-	os.Exit(runtime.Run("outbox-publisher", ":8081"))
+	os.Exit(runtime.Run("outbox-publisher", ":8081", runtime.Options{RequireDatabase: false}))
 }

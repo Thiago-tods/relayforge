@@ -4,9 +4,9 @@ package main
 import (
 	"os"
 
-	"github.com/relayforge/relayforge/internal/platform/runtime"
+	"github.com/Thiago-tods/relayforge/internal/platform/runtime"
 )
 
 func main() {
-	os.Exit(runtime.Run("delivery-worker", ":8082"))
+	os.Exit(runtime.Run("delivery-worker", ":8082", runtime.Options{RequireDatabase: false}))
 }

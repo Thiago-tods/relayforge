@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/relayforge/relayforge/internal/platform/apperror"
+	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
 )
 
 // Check reports whether a dependency is ready to serve traffic.
