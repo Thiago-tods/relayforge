@@ -159,8 +159,11 @@ decrypted and every endpoint needs a new secret. See [ADR 0016](docs/decisions/0
 
 **Rate limiting.** Limits are counted in PostgreSQL, so they hold across API instances: ingestion
 300 requests per minute per client address and 600 per endpoint, and failed logins 10 per account and
-30 per address per 15 minutes. See [ADR 0021](docs/decisions/0021-rate-limiting.md) for limits, settings and
-caveats (notably: behind a proxy the client address is the proxy).
+30 per address per 15 minutes. Login attempts reserve both budgets atomically before password
+verification; invalid credentials keep the reservation, while successful logins release it in the
+session transaction. This prevents concurrent requests from racing through a stale pre-check. See
+[ADR 0021](docs/decisions/0021-rate-limiting.md) for limits, settings and caveats (notably: behind a
+proxy the client address is the proxy).
 
 **Metrics.** Set `RELAYFORGE_METRICS_ENABLED=true` to serve Prometheus-format counters and latency
 histograms at `GET /metrics`. The endpoint is unauthenticated and off by default: expose it only on a
