@@ -87,3 +87,27 @@ producer --HTTPS--> POST /api/v1/ingest/{publicId}
   organization.
 
 See ADRs 0015 to 0021.
+
+## Delivery attempt recording protocol (Phase 4)
+
+Migration 00014 enforces this order in the database; the delivery worker must follow it.
+
+1. **Claim** (commits on its own): `UPDATE deliveries SET status = 'IN_FLIGHT', attempt_count = attempt_count + 1, ...`
+   from `PENDING`. A claim increments `attempt_count` by exactly one and sets the lease and claim token.
+2. **Send** the HTTP request outside any transaction.
+3. **Record and move in one transaction, in this order:**
+   `INSERT INTO delivery_attempts` (number equal to `attempt_count`), then
+   `UPDATE deliveries ... WHERE id = $1 AND status = 'IN_FLIGHT' AND claim_token = $2`.
+   If the update affects no row the claim is stale: roll back, which also discards the attempt.
+   A reaper handling an expired lease does the same, recording an `ABANDONED` attempt first.
+
+The attempt trigger locks the delivery row (`FOR NO KEY UPDATE`) before checking that the delivery is
+`IN_FLIGHT`, that the number equals `attempt_count`, and that the previous attempt exists (no gaps, no
+backfill). Writers therefore always lock the delivery row first and the attempt second, which rules out
+lock cycles, and a stale worker waits for a concurrent claim or completion and is then rejected.
+Recording after the delivery has left `IN_FLIGHT` in the same transaction is rejected, so the order is enforced.
+
+`delivery_attempts` rejects UPDATE, DELETE and TRUNCATE. `destinations` and `deliveries` reject DELETE
+and TRUNCATE (revoke or cancel instead). These are triggers, so they apply to every role, including one
+with full table privileges. Disabling them needs table ownership or superuser rights, so the
+application's runtime role must not own these tables. Migration rollback uses `DROP TABLE` and is not blocked.
