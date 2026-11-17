@@ -3,7 +3,7 @@
 RelayForge is a webhook infrastructure platform that receives, persists, processes, delivers,
 retries and monitors webhook events reliably.
 
-> **Status:** Phase 1 (database foundation). No business features are implemented yet.
+> **Status:** Phase 2 (identity, organizations and RBAC). Webhook features are not implemented yet.
 
 ## Architecture overview
 
@@ -11,7 +11,7 @@ RelayForge is a **modular monolith with independent workers**:
 
 | Component                 | Purpose                                         | Default port |
 | ------------------------- | ----------------------------------------------- | ------------ |
-| `cmd/api`                 | HTTP API                                        | 8080         |
+| `cmd/api`                 | HTTP API (`/api/v1`, health endpoints)          | 8080         |
 | `cmd/outbox-publisher`    | Publishes outbox records to NATS JetStream      | 8081         |
 | `cmd/delivery-worker`     | Delivers webhooks and handles retries           | 8082         |
 | `cmd/migrate`             | Applies and reports database migrations (CLI)   | n/a          |
@@ -19,6 +19,46 @@ RelayForge is a **modular monolith with independent workers**:
 
 Infrastructure: PostgreSQL (source of truth), Redis (caching and coordination), NATS JetStream
 (durable messaging). Every Go process exposes `GET /healthz` (liveness) and `GET /readyz` (readiness).
+
+### Identity, tenancy and access control
+
+- **Users** are global identities (`users`). One user can belong to many organizations.
+- **Organizations** are independent tenants. Access exists only through an active **membership**
+  carrying one of four roles: `OWNER`, `ADMIN`, `DEVELOPER`, `VIEWER`. Knowing an organization ID
+  grants nothing; non-members get the same `404` as for a missing organization.
+- **Authentication** is first-party email and password. Passwords are hashed with Argon2id
+  (64 MiB, 3 iterations, 2 lanes; 12 to 128 characters). Sessions are opaque 256-bit random tokens;
+  only their SHA-256 hash is stored. They last 12 hours in absolute terms and can be revoked
+  immediately.
+- **Cookies:** `relayforge_session` is `HttpOnly`, `SameSite=Lax`, `Path=/api`, expires with the
+  session, and is `Secure` whenever `RELAYFORGE_COOKIE_SECURE` is true (the default in production,
+  where disabling it is rejected at startup).
+- **CSRF:** every state-changing authenticated request needs the `X-CSRF-Token` header (a per-session
+  token whose hash is stored). Register and login return it; `POST /api/v1/auth/csrf` issues a new
+  one.
+- **Invitations:** an authorized member creates an invitation for an email and role and receives the
+  raw token once; delivering it is the caller's job because no email service is used. It expires in
+  7 days, can be revoked, works once, and only for the invited email.
+- **Audit:** security-sensitive actions are recorded in an append-only table in the same transaction
+  as the change.
+
+RBAC matrix ("Limited" for ADMIN: only DEVELOPER and VIEWER members, only DEVELOPER and VIEWER roles):
+
+| Operation | OWNER | ADMIN | DEVELOPER | VIEWER |
+|---|---|---|---|---|
+| View organization, list members | Yes | Yes | Yes | Yes |
+| Update organization | Yes | Yes | No | No |
+| Invite members | Yes | Limited | No | No |
+| List and revoke invitations | Yes | Yes | No | No |
+| Change roles, remove members | Yes | Limited | No | No |
+| Transfer ownership | Yes | No | No | No |
+| View audit events | Yes | Yes | No | No |
+
+Each organization always has exactly one `OWNER`; ownership only changes through
+`POST /api/v1/organizations/{id}/transfer-ownership`.
+
+Not implemented yet: email verification, password reset, MFA, automated invitation email, login
+rate limiting, leaving an organization, and organization deletion (see [SECURITY.md](SECURITY.md)).
 
 ### PostgreSQL
 
@@ -105,6 +145,8 @@ Configuration is read from environment variables:
 | `RELAYFORGE_HTTP_ADDR`           | per process   | HTTP listen address                  |
 | `RELAYFORGE_SHUTDOWN_TIMEOUT`    | `15s`         | Graceful shutdown limit              |
 | `RELAYFORGE_READ_HEADER_TIMEOUT` | `5s`          | HTTP header read timeout             |
+| `RELAYFORGE_SESSION_LIFETIME`    | `12h`         | Absolute session lifetime (max 30d)  |
+| `RELAYFORGE_COOKIE_SECURE`       | `true` in production, else `false` | `Secure` attribute of the session cookie |
 
 Run the frontend:
 
@@ -112,6 +154,37 @@ Run the frontend:
 cd web
 npm run dev
 ```
+
+### Using the API locally
+
+Start PostgreSQL, apply migrations and run the API (see above), then, in PowerShell (use `curl.exe`):
+
+```powershell
+$base = "http://127.0.0.1:8080/api/v1"
+# Register: creates the user, a first organization and a session cookie (kept in cookies.txt).
+curl.exe -s -c cookies.txt -H "Content-Type: application/json" `
+  -d '{"email":"you@example.com","password":"a long local password","displayName":"You","organizationName":"My Org"}' `
+  "$base/auth/register"
+```
+
+The response contains `session.csrfToken`. Send it on every state-changing request:
+
+```powershell
+curl.exe -s -b cookies.txt -H "X-CSRF-Token: <token>" -H "Content-Type: application/json" `
+  -d '{"email":"teammate@example.com","role":"DEVELOPER"}' `
+  "$base/organizations/<organization-id>/invitations"
+```
+
+The invitation response includes `token` once; give it to the teammate, who registers, then calls
+`POST $base/invitations/accept` with `{"token":"..."}`. Other endpoints: `GET /auth/me`,
+`POST /auth/login`, `POST /auth/logout`, `GET/POST /organizations`,
+`GET/PATCH /organizations/{id}`, `GET /organizations/{id}/members`,
+`PATCH|DELETE /organizations/{id}/members/{userId}`, `GET /organizations/{id}/invitations`,
+`DELETE /organizations/{id}/invitations/{invitationId}`, `GET /organizations/{id}/audit-events`.
+Collections accept `?limit=` (1 to 100, default 50) and `?offset=`. Errors look like
+`{"error":{"code":"forbidden","message":"..."}}`.
+
+Never commit cookie files or tokens: keep `cookies.txt` outside the working tree.
 
 ## Quality checks
 

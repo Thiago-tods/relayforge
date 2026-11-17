@@ -19,7 +19,16 @@ type Check func(ctx context.Context) error
 //	GET /healthz  liveness: the process is running
 //	GET /readyz   readiness: all registered checks pass
 func NewHandler(log *slog.Logger, checks map[string]Check) http.Handler {
+	return NewHandlerWithAPI(log, checks, nil)
+}
+
+// NewHandlerWithAPI is NewHandler plus an application handler mounted under
+// /api/. A nil api serves only the health endpoints.
+func NewHandlerWithAPI(log *slog.Logger, checks map[string]Check, api http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	if api != nil {
+		mux.Handle("/api/", api)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

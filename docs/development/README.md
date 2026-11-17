@@ -37,3 +37,15 @@ Every Go process serves `GET /healthz` and `GET /readyz` on its HTTP address.
 Integration tests use `internal/database/dbtest`, which creates a uniquely named database per test on
 the server in `RELAYFORGE_TEST_DATABASE_URL` and drops it at cleanup. Use a disposable server.
 `CI=true` or `RELAYFORGE_REQUIRE_INTEGRATION=1` turn a missing test database into a failure.
+
+## Working on identity and tenancy
+
+- Add a permission by extending the matrix in `internal/tenancy/role.go` and its table-driven test,
+  then call `authorize` or `lockAndAuthorize` in `internal/app` before touching data.
+- Operations that change memberships must start with `lockAndAuthorize` (row lock on the
+  organization) and write their audit event in the same transaction.
+- Every new tenant-owned table must be reachable only after `ActiveMembership` succeeds, and needs a
+  cross-tenant test.
+- Use `apptest.New(t)` for integration tests: it creates a disposable migrated database and a
+  service with cheap Argon2 parameters and a controllable clock.
+- Never log or return password hashes, session, CSRF or invitation tokens.

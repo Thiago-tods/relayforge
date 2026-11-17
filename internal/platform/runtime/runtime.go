@@ -13,7 +13,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Thiago-tods/relayforge/internal/app"
 	"github.com/Thiago-tods/relayforge/internal/database"
+	"github.com/Thiago-tods/relayforge/internal/httpapi"
+	"github.com/Thiago-tods/relayforge/internal/identity"
 	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/platform/config"
 	"github.com/Thiago-tods/relayforge/internal/platform/httpserver"
@@ -26,6 +29,8 @@ type Options struct {
 	// during graceful shutdown. Processes that do not use PostgreSQL yet must
 	// leave it false so they do not hold unused connections.
 	RequireDatabase bool
+	// ServeAPI mounts the /api/v1 HTTP API. It requires RequireDatabase.
+	ServeAPI bool
 }
 
 // Run starts the named service and blocks until it receives SIGINT or SIGTERM
@@ -50,6 +55,7 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 	log := observability.NewLogger(stdout, cfg.LogLevel, cfg.LogFormat, service)
 
 	checks := map[string]httpserver.Check{}
+	var api http.Handler
 	if opts.RequireDatabase {
 		dbCfg, err := config.LoadDatabaseFrom(lookup)
 		if err == nil {
@@ -67,9 +73,19 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 		// Closed after the HTTP server has drained, because defers run on return.
 		defer pool.Close()
 		checks["postgres"] = pool.Check
+
+		if opts.ServeAPI {
+			svc, err := app.New(pool, identity.NewHasher(identity.DefaultArgon2Params),
+				app.Config{SessionLifetime: cfg.SessionLifetime, InvitationLifetime: app.DefaultConfig().InvitationLifetime}, nil, log)
+			if err != nil {
+				log.Error("cannot initialize application service", "error", err)
+				return 1
+			}
+			api = httpapi.New(svc, log, cfg.CookieSecure).Handler()
+		}
 	}
 
-	srv := httpserver.New(cfg.HTTPAddr, httpserver.NewHandler(log, checks), cfg.ReadHeaderTimeout)
+	srv := httpserver.New(cfg.HTTPAddr, httpserver.NewHandlerWithAPI(log, checks, api), cfg.ReadHeaderTimeout)
 
 	ln, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {

@@ -22,6 +22,13 @@ func (e *Error) Error() string {
 	return e.Code + ": " + e.Message
 }
 
+// Is reports whether target is an *Error with the same status and code, so
+// errors.Is works for errors that were re-created with Wrap.
+func (e *Error) Is(target error) bool {
+	t, ok := target.(*Error)
+	return ok && t.Status == e.Status && t.Code == e.Code
+}
+
 // Unwrap returns the underlying cause.
 func (e *Error) Unwrap() error { return e.Err }
 
