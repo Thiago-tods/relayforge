@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 1: database foundation)
+
+- PostgreSQL configuration (`RELAYFORGE_DATABASE_URL`, `RELAYFORGE_DB_*`) with validation.
+- `internal/database`: pgx v5 connection pool with lifecycle management and credential-safe errors.
+- PostgreSQL readiness check in `/readyz` for processes that require the database (currently `api`).
+- Embedded SQL migrations (goose) with advisory-lock protection, and the `cmd/migrate` tool
+  (`up`, `status`). Initial migration adds the `relayforge_set_updated_at()` trigger function.
+- Real PostgreSQL integration tests and a PostgreSQL 17 service in CI.
+- ADRs 0003 to 0007.
+
+### Changed
+
+- Go module path is now `github.com/Thiago-tods/relayforge` (see ADR 0003).
+- `runtime.Run` takes an `Options` argument.
+
 ### Added
 
 - Phase 0 project foundation: Go backend skeleton (`api`, `outbox-publisher`, `delivery-worker`)

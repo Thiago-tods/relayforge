@@ -16,7 +16,9 @@ All processes share the `internal/` packages and are built from one Go module.
 | ------------------------ | ------------------------------------------------------------ |
 | `internal/platform`      | Configuration, HTTP server, error handling, process runtime  |
 | `internal/observability` | Structured logging (metrics and tracing later)               |
-| `internal/database`      | PostgreSQL access and migrations (not yet implemented)       |
+| `internal/database`      | pgx connection pool, health check, embedded goose migrations |
+| `internal/database/dbtest` | Test helper creating isolated databases for integration tests |
+| `cmd/migrate`            | CLI to apply (`up`) and report (`status`) migrations         |
 
 ## Data stores
 
@@ -26,3 +28,12 @@ All processes share the `internal/` packages and are built from one Go module.
 
 The detailed Technical Design Document is maintained outside this repository; decisions that
 affect the code are recorded in [docs/decisions](../decisions/).
+
+## Database layer
+
+- One `database.Pool` (pgxpool) per process, opened and closed by `internal/platform/runtime`.
+  Only processes that set `RequireDatabase` connect; currently `api`.
+- `/readyz` reports a `postgres` check; `/healthz` is independent of PostgreSQL.
+- Schema is defined by embedded SQL migrations tracked in `goose_db_version`, applied explicitly with
+  `cmd/migrate`, never implicitly at API startup.
+- See ADRs 0004 to 0007 for the rationale.

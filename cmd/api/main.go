@@ -4,9 +4,9 @@ package main
 import (
 	"os"
 
-	"github.com/relayforge/relayforge/internal/platform/runtime"
+	"github.com/Thiago-tods/relayforge/internal/platform/runtime"
 )
 
 func main() {
-	os.Exit(runtime.Run("api", ":8080"))
+	os.Exit(runtime.Run("api", ":8080", runtime.Options{RequireDatabase: true}))
 }

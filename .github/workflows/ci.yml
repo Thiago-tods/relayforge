@@ -15,6 +15,27 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Disposable PostgreSQL for integration tests. These credentials are
+    # test-only values for a container that exists for the duration of the job.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: relayforge_ci
+          POSTGRES_PASSWORD: relayforge_ci_password
+          POSTGRES_DB: relayforge_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relayforge_ci -d relayforge_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Integration tests create and drop their own uniquely named databases here.
+      RELAYFORGE_TEST_DATABASE_URL: postgres://relayforge_ci:relayforge_ci_password@127.0.0.1:5432/relayforge_ci?sslmode=disable
+      # Target of the migrate command smoke test.
+      RELAYFORGE_DATABASE_URL: postgres://relayforge_ci:relayforge_ci_password@127.0.0.1:5432/relayforge_ci?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -26,8 +47,14 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
-      - name: Test
-        run: go test -race ./...
+      - name: Test (unit and PostgreSQL integration, with race detector)
+        run: go test -race -count=1 ./...
+      - name: Apply migrations
+        run: go run ./cmd/migrate up
+      - name: Re-apply migrations (must be a no-op)
+        run: go run ./cmd/migrate up
+      - name: Migration status
+        run: go run ./cmd/migrate status
       - name: Verify modules
         run: go mod verify
       - name: Vulnerability check
