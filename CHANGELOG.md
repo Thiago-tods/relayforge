@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.2: reliable webhook delivery engine)
+
+- `internal/egress`: outbound HTTP client with DNS pinning, SSRF address blocking, no proxies, no redirects,
+  bounded timeouts and responses, and sanitized errors (ADR 0023).
+- `internal/delivery`: outbound `v1=` HMAC signing with per-destination `rfd_` secrets (ADR 0022); claim,
+  execute, finalize worker with fencing tokens, leases, `ABANDONED` recovery, graceful shutdown and
+  bounded concurrency; retry classification with `Retry-After` handling (ADR 0024).
+- `internal/messaging` and `internal/relay`: NATS JetStream stream and durable consumer, transactional
+  outbox publisher (publish acknowledgment before `published_at`), idempotent fan-out and PostgreSQL
+  reconciliation (ADR 0025). `cmd/outbox-publisher` now runs them.
+- Migration 00015: `subscriptions` (tenant-safe composite foreign keys, revoked, never deleted).
+- Label-free delivery, outbox, fan-out and reconciliation metrics; gauges in the metrics registry.
+- Dependencies: `nats.go` (client) and `nats-server` (embedded server for tests only) with their transitive modules.
+- CI starts a disposable NATS JetStream container.
+- Delivery is at-least-once. Exactly-once is not claimed.
+
 ### Added (Phase 3: webhook ingestion and transactional outbox)
 
 - Ingestion endpoints (`ingestion_endpoints`) with random public identifiers and AES-256-GCM encrypted

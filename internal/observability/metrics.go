@@ -62,6 +62,29 @@ func (h *Histogram) Count() uint64 {
 	return h.total.Load()
 }
 
+// Gauge is a value that can go up and down. A nil *Gauge ignores updates.
+type Gauge struct{ v atomic.Int64 }
+
+// Set stores a value.
+func (g *Gauge) Set(v int64) {
+	if g != nil {
+		g.v.Store(v)
+	}
+}
+
+// Value returns the stored value.
+func (g *Gauge) Value() int64 {
+	if g == nil {
+		return 0
+	}
+	return g.v.Load()
+}
+
+type gaugeEntry struct {
+	help string
+	g    *Gauge
+}
+
 type counterEntry struct {
 	help string
 	c    *Counter
@@ -79,11 +102,12 @@ type Registry struct {
 	mu         sync.Mutex
 	counters   map[string]counterEntry
 	histograms map[string]histogramEntry
+	gauges     map[string]gaugeEntry
 }
 
 // NewRegistry creates an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{counters: map[string]counterEntry{}, histograms: map[string]histogramEntry{}}
+	return &Registry{counters: map[string]counterEntry{}, histograms: map[string]histogramEntry{}, gauges: map[string]gaugeEntry{}}
 }
 
 // Counter returns the counter with the given name, creating it on first use.
@@ -99,6 +123,21 @@ func (r *Registry) Counter(name, help string) *Counter {
 	c := &Counter{}
 	r.counters[name] = counterEntry{help: help, c: c}
 	return c
+}
+
+// Gauge returns the gauge with the given name, creating it on first use.
+func (r *Registry) Gauge(name, help string) *Gauge {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.gauges[name]; ok {
+		return e.g
+	}
+	g := &Gauge{}
+	r.gauges[name] = gaugeEntry{help: help, g: g}
+	return g
 }
 
 // Histogram returns the histogram with the given name, creating it on first use.
@@ -128,6 +167,15 @@ func (r *Registry) Render(w io.Writer) {
 	for _, n := range names {
 		e := r.counters[n]
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", n, e.help, n, n, e.c.Value())
+	}
+	names = names[:0]
+	for n := range r.gauges {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		e := r.gauges[n]
+		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", n, e.help, n, n, e.g.Value())
 	}
 	names = names[:0]
 	for n := range r.histograms {

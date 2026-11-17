@@ -8,5 +8,5 @@ import (
 )
 
 func main() {
-	os.Exit(runtime.Run("outbox-publisher", ":8081", runtime.Options{RequireDatabase: false}))
+	os.Exit(runtime.Run("outbox-publisher", ":8081", runtime.Options{RequireDatabase: true, RunRelay: true}))
 }

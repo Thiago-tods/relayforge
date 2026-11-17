@@ -105,12 +105,17 @@ var ErrBlockedAddress = errors.New("destination address is not allowed")
 // address is blocked. Rejecting mixed answers closes the case where a
 // destination name resolves to both a public and an internal address.
 func RequireAllAllowed(addrs []netip.Addr) ([]netip.Addr, error) {
+	return requireAllWith(addrs, BlockedReason)
+}
+
+// requireAllWith is RequireAllAllowed with an injectable policy, used only by tests in this package.
+func requireAllWith(addrs []netip.Addr, policy func(netip.Addr) string) ([]netip.Addr, error) {
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("%w: no addresses", ErrBlockedAddress)
 	}
 	out := make([]netip.Addr, 0, len(addrs))
 	for _, a := range addrs {
-		if reason := BlockedReason(a); reason != "" {
+		if reason := policy(a); reason != "" {
 			return nil, fmt.Errorf("%w: %s", ErrBlockedAddress, reason)
 		}
 		out = append(out, a.Unmap())

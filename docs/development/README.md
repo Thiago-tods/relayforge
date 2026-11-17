@@ -62,3 +62,55 @@ the server in `RELAYFORGE_TEST_DATABASE_URL` and drops it at cleanup. Use a disp
 - Generate a local encryption key with
   `[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))` and set
   `RELAYFORGE_ENCRYPTION_KEY` in your shell. Never commit it.
+
+## Working on delivery (Phase 4.2)
+
+Processes (each is a separate binary and needs PostgreSQL; none needs Docker):
+
+| Binary | Role | Extra requirements |
+|---|---|---|
+| `cmd/outbox-publisher` | Publishes outbox rows to JetStream, fans messages out into deliveries, reconciles | `RELAYFORGE_NATS_URL` |
+| `cmd/delivery-worker` | Claims and sends deliveries, recovers expired leases | `RELAYFORGE_ENCRYPTION_KEY` |
+
+Configuration (all optional unless noted; durations accept `30s` or plain seconds):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RELAYFORGE_NATS_URL` | none (required by the publisher) | May embed credentials; never logged |
+| `RELAYFORGE_NATS_STREAM` / `RELAYFORGE_NATS_CONSUMER` | `RELAYFORGE_EVENTS` / `delivery-fanout` | Names |
+| `RELAYFORGE_DELIVERY_CONCURRENCY` | 8 (1 to 64) | Maximum simultaneous requests |
+| `RELAYFORGE_DELIVERY_BATCH_SIZE` | concurrency | Deliveries claimed per poll (not above concurrency) |
+| `RELAYFORGE_DELIVERY_POLL_INTERVAL` | 1s | Claim polling |
+| `RELAYFORGE_DELIVERY_RECOVERY_INTERVAL` | 30s | Expired lease reaper |
+| `RELAYFORGE_DELIVERY_LEASE` | 2m | At least 30s and longer than the request timeout |
+| `RELAYFORGE_DELIVERY_REQUEST_TIMEOUT` | 30s | Whole request, including connect and TLS |
+| `RELAYFORGE_DELIVERY_SHUTDOWN_GRACE` | 20s | Wait for in-flight attempts on shutdown |
+
+Publisher and reconciliation tuning (batch 50, lease 1m, reconcile every 1m with a 2m grace, 48h lookback,
+500 per sweep) are code defaults in `internal/relay`; change them there until a real need appears.
+
+Metrics (enable with `RELAYFORGE_METRICS_ENABLED=true`, unauthenticated, restrict at the network level)
+have fixed names and no labels: `relayforge_delivery_*`, `relayforge_outbox_*`, `relayforge_fanout_*`,
+`relayforge_reconcile*`. Logs carry an `error_class`, never URLs, payloads, headers or secrets.
+
+### Running the tests
+
+- Everything except the PostgreSQL suites runs with `go test ./...`. NATS tests start an **embedded**
+  `nats-server` on a random loopback port with a temporary store: no Docker, no installed server.
+- To use a real server instead, set `RELAYFORGE_TEST_NATS_URL` (CI does).
+- PostgreSQL tests need `RELAYFORGE_TEST_DATABASE_URL`. On Windows without Docker use a portable
+  PostgreSQL 17 (a zip from EnterpriseDB), `initdb`, `pg_ctl start -o "-p 54329"`, then point the URL at
+  it. Stop it when you are done.
+- The race detector needs CGO and a C compiler on Windows (for example w64devkit's `gcc` on `PATH`):
+  `$env:CGO_ENABLED = "1"; go test -race -count=1 ./...`.
+- No test reaches the public internet: the egress client takes a fake resolver and tests use local TLS servers.
+
+### Limitations of this phase
+
+- There is no HTTP API yet to create destinations or subscriptions; both are rows managed by migrations
+  and tests. A management API is the next phase.
+- Destinations on private addresses are not supported (ADR 0023).
+- Delivery is at-least-once with no ordering guarantee. Receivers must deduplicate on
+  `X-RelayForge-Delivery-Id` (ADR 0022 and 0024).
+- Events older than the reconciliation lookback whose broker message was lost are not repaired automatically.
+- Secret rotation for destinations has a schema column but no operation yet.

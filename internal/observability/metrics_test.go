@@ -68,3 +68,22 @@ func TestHistogramBucketsAndRendering(t *testing.T) {
 		t.Error("counters must be sorted by name")
 	}
 }
+
+func TestGaugeSetAndRender(t *testing.T) {
+	r := NewRegistry()
+	g := r.Gauge("queue_depth", "depth")
+	g.Set(5)
+	g.Set(3)
+	if g.Value() != 3 || r.Gauge("queue_depth", "x") != g {
+		t.Fatal("gauge must hold the last value and be shared by name")
+	}
+	var nilGauge *Gauge
+	nilGauge.Set(1)
+	var nilReg *Registry
+	nilReg.Gauge("a", "b").Set(1)
+	var sb strings.Builder
+	r.Render(&sb)
+	if !strings.Contains(sb.String(), "# TYPE queue_depth gauge\nqueue_depth 3") {
+		t.Fatalf("unexpected output:\n%s", sb.String())
+	}
+}

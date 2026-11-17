@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Thiago-tods/relayforge/internal/database/dbtest"
+	"github.com/Thiago-tods/relayforge/internal/messaging/natstest"
 )
 
 const waitTimeout = 20 * time.Second
@@ -263,5 +264,68 @@ func TestServeAPIMountsTheAPIAndOptionalMetrics(t *testing.T) {
 	}
 	if strings.Contains(body, key) {
 		t.Fatal("metrics expose the key")
+	}
+}
+
+func TestDeliveryWorkerRequiresTheEncryptionKeyAndShutsDownCleanly(t *testing.T) {
+	dbCfg := dbtest.NewDatabase(t)
+	h := start(t, Options{RequireDatabase: true, RunDeliveryWorker: true}, map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL})
+	if code, ok := h.exited(); !ok || code != 2 {
+		t.Fatalf("without a key: exit = (%d, %v), want (2, true)", code, ok)
+	}
+
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	h = start(t, Options{RequireDatabase: true, RunDeliveryWorker: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_ENCRYPTION_KEY": key, "RELAYFORGE_METRICS_ENABLED": "true",
+		"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE": "100ms",
+	})
+	if h.addr == "" {
+		t.Fatalf("worker did not start: %s", h.stderr)
+	}
+	code, body := get(t, h.addr, "/metrics")
+	if code != http.StatusOK || !strings.Contains(body, "relayforge_delivery_claimed_total") || !strings.Contains(body, "relayforge_delivery_pending") {
+		t.Fatalf("delivery metrics must be exposed: %d %s", code, body)
+	}
+	if strings.Contains(body, key) || strings.Contains(h.stdout.String()+h.stderr.String(), key) {
+		t.Fatal("the key leaked")
+	}
+	if code := h.stop(t); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (worker, maintenance and pool must stop cleanly)", code)
+	}
+}
+
+func TestRelayRequiresNATSAndShutsDownCleanly(t *testing.T) {
+	dbCfg := dbtest.NewDatabase(t)
+	h := start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL})
+	if code, ok := h.exited(); !ok || code != 2 {
+		t.Fatalf("without a NATS URL: exit = (%d, %v), want (2, true)", code, ok)
+	}
+
+	natsURL := natstest.URL(t)
+	h = start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_NATS_URL": natsURL, "RELAYFORGE_METRICS_ENABLED": "true",
+		"RELAYFORGE_NATS_STREAM": "RT_" + strings.ToUpper(strings.ReplaceAll(t.Name(), "/", "_"))[:20],
+	})
+	if h.addr == "" {
+		t.Fatalf("relay did not start: %s", h.stderr)
+	}
+	if code, body := get(t, h.addr, "/metrics"); code != http.StatusOK || !strings.Contains(body, "relayforge_outbox_published_total") {
+		t.Fatalf("relay metrics must be exposed: %d %s", code, body)
+	}
+	if code := h.stop(t); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestRelayFailsFastWhenNATSIsUnreachable(t *testing.T) {
+	dbCfg := dbtest.NewDatabase(t)
+	h := start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_NATS_URL": "nats://user:SECRETPASS@127.0.0.1:1",
+	})
+	if code, ok := h.exited(); !ok || code != 1 {
+		t.Fatalf("exit = (%d, %v), want (1, true)", code, ok)
+	}
+	if strings.Contains(h.stdout.String()+h.stderr.String(), "SECRETPASS") {
+		t.Fatal("the NATS credentials leaked")
 	}
 }

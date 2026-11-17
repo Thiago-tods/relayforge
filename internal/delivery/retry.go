@@ -42,18 +42,21 @@ type AttemptResult struct {
 	HTTPStatus int
 	// RetryAfter is the destination's Retry-After hint, zero if absent.
 	RetryAfter time.Duration
+	// ErrorClass is a short machine-readable failure class (for example a
+	// transport error class), empty for HTTP responses. It is safe to store and log.
+	ErrorClass string
 }
 
 // Retryable reports whether another attempt may change the result. Transient
-// failures retry: network errors, timeouts, abandoned attempts, 408, 429 and
-// 5xx. Everything else is final: other 4xx (the destination rejected the
+// failures retry: network errors, timeouts, abandoned attempts, 408 (Request
+// Timeout), 425 (Too Early), 429 (Too Many Requests) and 5xx. Everything else is final: other 4xx (the destination rejected the
 // request), redirects (never followed), policy blocks and unknown outcomes.
 func (r AttemptResult) Retryable() bool {
 	switch r.Outcome {
 	case OutcomeNetworkError, OutcomeTimeout, OutcomeAbandoned:
 		return true
 	case OutcomeHTTPError:
-		return r.HTTPStatus == 408 || r.HTTPStatus == 429 || (r.HTTPStatus >= 500 && r.HTTPStatus <= 599)
+		return r.HTTPStatus == 408 || r.HTTPStatus == 425 || r.HTTPStatus == 429 || (r.HTTPStatus >= 500 && r.HTTPStatus <= 599)
 	default:
 		return false
 	}

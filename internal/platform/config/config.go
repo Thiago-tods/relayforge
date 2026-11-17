@@ -41,9 +41,32 @@ type Config struct {
 	// LoginFailuresPerAccount and LoginFailuresPerIP cap failed logins per 15 minutes.
 	LoginFailuresPerAccount int
 	LoginFailuresPerIP      int
+	// Delivery tunes the delivery worker (cmd/delivery-worker).
+	Delivery Delivery
+	// NATS configures the JetStream connection used by cmd/outbox-publisher.
+	NATS NATS
 	// MetricsEnabled mounts GET /metrics (Prometheus text format). Off by default
 	// because the endpoint is unauthenticated; restrict it at the network level.
 	MetricsEnabled bool
+}
+
+// Delivery holds delivery worker settings. They are validated again, with the
+// lease and concurrency invariants, when the worker is built.
+type Delivery struct {
+	Concurrency      int
+	BatchSize        int
+	PollInterval     time.Duration
+	RecoveryInterval time.Duration
+	LeaseDuration    time.Duration
+	ShutdownGrace    time.Duration
+	RequestTimeout   time.Duration
+}
+
+// NATS holds JetStream settings. URL may embed credentials and is never logged.
+type NATS struct {
+	URL      string
+	Stream   string
+	Consumer string
 }
 
 const (
@@ -121,6 +144,13 @@ func LoadFrom(lookup func(string) (string, bool), defaultHTTPAddr string) (Confi
 			*s.dst = n
 		}
 	}
+	if err := loadDelivery(get, &cfg.Delivery); err != nil {
+		return Config{}, err
+	}
+	cfg.NATS = NATS{
+		URL: get("RELAYFORGE_NATS_URL", ""), Stream: get("RELAYFORGE_NATS_STREAM", "RELAYFORGE_EVENTS"),
+		Consumer: get("RELAYFORGE_NATS_CONSUMER", "delivery-fanout"),
+	}
 	if raw := get("RELAYFORGE_METRICS_ENABLED", ""); raw != "" {
 		if cfg.MetricsEnabled, err = strconv.ParseBool(raw); err != nil {
 			return Config{}, fmt.Errorf("RELAYFORGE_METRICS_ENABLED: invalid boolean %q", raw)
@@ -169,6 +199,19 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s: must be between 1 and %d", name, maxRateLimit)
 		}
 	}
+	if c.Delivery.Concurrency < 1 || c.Delivery.Concurrency > 64 {
+		return fmt.Errorf("RELAYFORGE_DELIVERY_CONCURRENCY: must be between 1 and 64")
+	}
+	if c.Delivery.BatchSize < 1 || c.Delivery.BatchSize > c.Delivery.Concurrency {
+		return fmt.Errorf("RELAYFORGE_DELIVERY_BATCH_SIZE: must be between 1 and RELAYFORGE_DELIVERY_CONCURRENCY")
+	}
+	d := c.Delivery
+	if d.PollInterval <= 0 || d.RecoveryInterval <= 0 || d.RequestTimeout <= 0 || d.ShutdownGrace < 0 {
+		return fmt.Errorf("RELAYFORGE_DELIVERY_*: intervals and timeouts must be positive")
+	}
+	if d.LeaseDuration < 30*time.Second || d.LeaseDuration <= d.RequestTimeout {
+		return fmt.Errorf("RELAYFORGE_DELIVERY_LEASE: must be at least 30s and longer than RELAYFORGE_DELIVERY_REQUEST_TIMEOUT")
+	}
 	if c.Env == "production" && !c.CookieSecure {
 		return fmt.Errorf("RELAYFORGE_COOKIE_SECURE: must be true in production")
 	}
@@ -188,4 +231,51 @@ func duration(raw string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration %q", raw)
 	}
 	return time.Duration(secs) * time.Second, nil
+}
+
+func loadDelivery(get func(key, def string) string, d *Delivery) error {
+	ints := []struct {
+		key string
+		dst *int
+		def int
+	}{
+		{"RELAYFORGE_DELIVERY_CONCURRENCY", &d.Concurrency, 8},
+	}
+	for _, s := range ints {
+		*s.dst = s.def
+		if raw := get(s.key, ""); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil {
+				return fmt.Errorf("%s: invalid integer %q", s.key, raw)
+			}
+			*s.dst = n
+		}
+	}
+	d.BatchSize = d.Concurrency
+	if raw := get("RELAYFORGE_DELIVERY_BATCH_SIZE", ""); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("RELAYFORGE_DELIVERY_BATCH_SIZE: invalid integer %q", raw)
+		}
+		d.BatchSize = n
+	}
+	durations := []struct {
+		key string
+		dst *time.Duration
+		def time.Duration
+	}{
+		{"RELAYFORGE_DELIVERY_POLL_INTERVAL", &d.PollInterval, time.Second},
+		{"RELAYFORGE_DELIVERY_RECOVERY_INTERVAL", &d.RecoveryInterval, 30 * time.Second},
+		{"RELAYFORGE_DELIVERY_LEASE", &d.LeaseDuration, 2 * time.Minute},
+		{"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE", &d.ShutdownGrace, 20 * time.Second},
+		{"RELAYFORGE_DELIVERY_REQUEST_TIMEOUT", &d.RequestTimeout, 30 * time.Second},
+	}
+	for _, s := range durations {
+		v, err := duration(get(s.key, ""), s.def)
+		if err != nil {
+			return fmt.Errorf("%s: %w", s.key, err)
+		}
+		*s.dst = v
+	}
+	return nil
 }
