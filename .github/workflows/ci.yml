@@ -36,11 +36,19 @@ jobs:
       RELAYFORGE_TEST_DATABASE_URL: postgres://relayforge_ci:relayforge_ci_password@127.0.0.1:5432/relayforge_ci?sslmode=disable
       # Target of the migrate command smoke test.
       RELAYFORGE_DATABASE_URL: postgres://relayforge_ci:relayforge_ci_password@127.0.0.1:5432/relayforge_ci?sslmode=disable
+      # JetStream server for the messaging tests (started in a step below). Without it the
+      # tests start an embedded server, so this only adds a second, real-server check.
+      RELAYFORGE_TEST_NATS_URL: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Start NATS JetStream (disposable, test-only)
+        run: |
+          docker run -d --name nats -p 127.0.0.1:4222:4222 nats:2.10-alpine -js
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null && exit 0; sleep 1; done
+          echo 'NATS did not start' >&2; docker logs nats; exit 1
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet

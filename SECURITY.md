@@ -67,3 +67,15 @@ and for failed logins (ADR 0021), and an atomic event + outbox commit (ADRs 0015
 - **Events are never deleted** and the outbox is never drained: there is no retention policy or
   publisher yet.
 - Email verification, password reset, MFA and automated invitation delivery remain unimplemented.
+
+## Outbound delivery security (Phase 4.2)
+
+- Destination URLs are untrusted. Every send re-validates the URL, resolves the host once, rejects the request
+  if **any** answer is a non-public address, and connects to the validated IP (DNS pinning). Proxies and
+  redirects are never followed (ADR 0023).
+- Destination secrets are encrypted at rest (AES-256-GCM, domain-separated associated data) and used only to
+  sign. Requests carry a timestamped HMAC over delivery id, event id and body (ADR 0022).
+- Logs and metrics never contain destination URLs, payloads, headers, secrets or response bodies.
+- Delivery is at-least-once: receivers must deduplicate on `X-RelayForge-Delivery-Id`.
+- Run workers with a network policy that blocks private ranges as a second layer; the application check
+  is not a substitute for it.

@@ -5,13 +5,18 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/database/dbtest"
+	"github.com/Thiago-tods/relayforge/internal/messaging/natstest"
+	"github.com/Thiago-tods/relayforge/internal/platform/config"
 )
 
 const waitTimeout = 20 * time.Second
@@ -21,8 +26,52 @@ type harness struct {
 	addr   string
 	cancel context.CancelFunc
 	done   chan int
-	stdout *bytes.Buffer
-	stderr *bytes.Buffer
+	stdout *syncBuffer
+	stderr *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer safe for a service writing logs while a test reads them.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// migratedDatabase creates a disposable database with every migration applied, for
+// services that run queries (the delivery worker and the outbox relay).
+func migratedDatabase(t *testing.T) config.Database {
+	t.Helper()
+	cfg := dbtest.NewDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := database.Open(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	db, err := pool.SQLDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := database.NewMigrator(db, database.EmbeddedMigrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return cfg
 }
 
 func envLookup(env map[string]string) func(string) (string, bool) {
@@ -39,7 +88,7 @@ func start(t *testing.T, opts Options, env map[string]string) *harness {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &harness{cancel: cancel, done: make(chan int, 1), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	h := &harness{cancel: cancel, done: make(chan int, 1), stdout: &syncBuffer{}, stderr: &syncBuffer{}}
 	ready := make(chan string, 1)
 	go func() {
 		h.done <- run(ctx, "test-service", ":0", opts, envLookup(merged), h.stdout, h.stderr,
@@ -263,5 +312,68 @@ func TestServeAPIMountsTheAPIAndOptionalMetrics(t *testing.T) {
 	}
 	if strings.Contains(body, key) {
 		t.Fatal("metrics expose the key")
+	}
+}
+
+func TestDeliveryWorkerRequiresTheEncryptionKeyAndShutsDownCleanly(t *testing.T) {
+	dbCfg := migratedDatabase(t)
+	h := start(t, Options{RequireDatabase: true, RunDeliveryWorker: true}, map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL})
+	if code, ok := h.exited(); !ok || code != 2 {
+		t.Fatalf("without a key: exit = (%d, %v), want (2, true)", code, ok)
+	}
+
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	h = start(t, Options{RequireDatabase: true, RunDeliveryWorker: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_ENCRYPTION_KEY": key, "RELAYFORGE_METRICS_ENABLED": "true",
+		"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE": "100ms",
+	})
+	if h.addr == "" {
+		t.Fatalf("worker did not start: %s", h.stderr)
+	}
+	code, body := get(t, h.addr, "/metrics")
+	if code != http.StatusOK || !strings.Contains(body, "relayforge_delivery_claimed_total") || !strings.Contains(body, "relayforge_delivery_pending") {
+		t.Fatalf("delivery metrics must be exposed: %d %s", code, body)
+	}
+	if strings.Contains(body, key) || strings.Contains(h.stdout.String()+h.stderr.String(), key) {
+		t.Fatal("the key leaked")
+	}
+	if code := h.stop(t); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (worker, maintenance and pool must stop cleanly)", code)
+	}
+}
+
+func TestRelayRequiresNATSAndShutsDownCleanly(t *testing.T) {
+	dbCfg := migratedDatabase(t)
+	h := start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL})
+	if code, ok := h.exited(); !ok || code != 2 {
+		t.Fatalf("without a NATS URL: exit = (%d, %v), want (2, true)", code, ok)
+	}
+
+	natsURL := natstest.URL(t)
+	h = start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_NATS_URL": natsURL, "RELAYFORGE_METRICS_ENABLED": "true",
+		"RELAYFORGE_NATS_STREAM": "RT_" + strings.ToUpper(strings.ReplaceAll(t.Name(), "/", "_"))[:20],
+	})
+	if h.addr == "" {
+		t.Fatalf("relay did not start: %s", h.stderr)
+	}
+	if code, body := get(t, h.addr, "/metrics"); code != http.StatusOK || !strings.Contains(body, "relayforge_outbox_published_total") {
+		t.Fatalf("relay metrics must be exposed: %d %s", code, body)
+	}
+	if code := h.stop(t); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestRelayFailsFastWhenNATSIsUnreachable(t *testing.T) {
+	dbCfg := dbtest.NewDatabase(t)
+	h := start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_NATS_URL": "nats://user:SECRETPASS@127.0.0.1:1",
+	})
+	if code, ok := h.exited(); !ok || code != 1 {
+		t.Fatalf("exit = (%d, %v), want (1, true)", code, ok)
+	}
+	if strings.Contains(h.stdout.String()+h.stderr.String(), "SECRETPASS") {
+		t.Fatal("the NATS credentials leaked")
 	}
 }

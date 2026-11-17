@@ -7,22 +7,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Thiago-tods/relayforge/internal/app"
 	"github.com/Thiago-tods/relayforge/internal/database"
+	"github.com/Thiago-tods/relayforge/internal/delivery"
+	"github.com/Thiago-tods/relayforge/internal/egress"
 	"github.com/Thiago-tods/relayforge/internal/httpapi"
 	"github.com/Thiago-tods/relayforge/internal/identity"
 	"github.com/Thiago-tods/relayforge/internal/ingest"
+	"github.com/Thiago-tods/relayforge/internal/messaging"
 	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/platform/config"
 	"github.com/Thiago-tods/relayforge/internal/platform/httpserver"
 	"github.com/Thiago-tods/relayforge/internal/ratelimit"
+	"github.com/Thiago-tods/relayforge/internal/relay"
 	"github.com/Thiago-tods/relayforge/internal/secretbox"
 )
 
@@ -35,6 +41,13 @@ type Options struct {
 	RequireDatabase bool
 	// ServeAPI mounts the /api/v1 HTTP API. It requires RequireDatabase.
 	ServeAPI bool
+	// RunDeliveryWorker runs the outbound delivery worker. It requires RequireDatabase
+	// and RELAYFORGE_ENCRYPTION_KEY, and is stopped and awaited before the pool closes.
+	RunDeliveryWorker bool
+	// RunRelay runs the outbox publisher and the fan-out consumer. It requires
+	// RequireDatabase and RELAYFORGE_NATS_URL, and is stopped and awaited before
+	// the pool closes.
+	RunRelay bool
 }
 
 // Run starts the named service and blocks until it receives SIGINT or SIGTERM
@@ -77,6 +90,22 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 		// Closed after the HTTP server has drained, because defers run on return.
 		defer pool.Close()
 		checks["postgres"] = pool.Check
+
+		if opts.RunDeliveryWorker {
+			stop, code := startDeliveryWorker(ctx, service, cfg, pool, log, stderr, &mounts)
+			if code != 0 {
+				return code
+			}
+			defer stop()
+		}
+
+		if opts.RunRelay {
+			stop, code := startRelay(ctx, service, cfg, pool, log, stderr, &mounts)
+			if code != 0 {
+				return code
+			}
+			defer stop()
+		}
 
 		if opts.ServeAPI {
 			if len(cfg.EncryptionKey) == 0 {
@@ -161,4 +190,115 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 	}
 	log.Info("shutdown complete")
 	return 0
+}
+
+// startDeliveryWorker builds the delivery worker and runs it in one goroutine.
+// The returned stop function cancels it and waits for it, so the caller can
+// close the database pool afterwards. A non-zero code is a startup failure.
+func startDeliveryWorker(ctx context.Context, service string, cfg config.Config, pool *database.Pool, log *slog.Logger,
+	stderr io.Writer, mounts *[]httpserver.Mount) (stop func(), code int) {
+	if len(cfg.EncryptionKey) == 0 {
+		fmt.Fprintf(stderr, "%s: RELAYFORGE_ENCRYPTION_KEY is required (32 bytes, base64)\n", service)
+		return nil, 2
+	}
+	box, err := secretbox.New(cfg.EncryptionKey, 1)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: invalid RELAYFORGE_ENCRYPTION_KEY\n", service)
+		return nil, 2
+	}
+	var registry *observability.Registry
+	if cfg.MetricsEnabled {
+		registry = observability.NewRegistry()
+		*mounts = append(*mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
+	}
+
+	clientCfg := egress.DefaultClientConfig()
+	clientCfg.RequestTimeout = cfg.Delivery.RequestTimeout
+	client, err := egress.NewClient(clientCfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: invalid delivery client configuration: %v\n", service, err)
+		return nil, 2
+	}
+	host, _ := os.Hostname()
+	worker, err := delivery.NewWorker(delivery.WorkerDeps{
+		Pool: pool, Box: box, Sender: client, Policy: delivery.DefaultRetryPolicy(), Log: log, Metrics: delivery.NewMetrics(registry),
+		Config: delivery.WorkerConfig{
+			WorkerID:    fmt.Sprintf("%s-%s-%d", service, host, os.Getpid()),
+			Concurrency: cfg.Delivery.Concurrency, BatchSize: cfg.Delivery.BatchSize, PollInterval: cfg.Delivery.PollInterval,
+			RecoveryInterval: cfg.Delivery.RecoveryInterval, LeaseDuration: cfg.Delivery.LeaseDuration, ShutdownGrace: cfg.Delivery.ShutdownGrace,
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: invalid delivery worker configuration: %v\n", service, err)
+		return nil, 2
+	}
+
+	wctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := worker.Run(wctx); err != nil {
+			log.Error("delivery worker stopped", "error_class", "worker_error")
+		}
+	}()
+	log.Info("delivery worker started", "concurrency", cfg.Delivery.Concurrency)
+	return func() { cancel(); <-done }, 0
+}
+
+// startRelay connects to JetStream, ensures the stream and consumer exist, and runs
+// the outbox publisher and the fan-out consumer (with reconciliation). The returned
+// stop function cancels both and waits for them. A non-zero code is a startup failure.
+func startRelay(ctx context.Context, service string, cfg config.Config, pool *database.Pool, log *slog.Logger,
+	stderr io.Writer, mounts *[]httpserver.Mount) (stop func(), code int) {
+	if cfg.NATS.URL == "" {
+		fmt.Fprintf(stderr, "%s: RELAYFORGE_NATS_URL is required\n", service)
+		return nil, 2
+	}
+	mcfg := messaging.DefaultConfig(cfg.NATS.URL)
+	mcfg.Stream, mcfg.Consumer = cfg.NATS.Stream, cfg.NATS.Consumer
+	if err := mcfg.Validate(); err != nil {
+		fmt.Fprintf(stderr, "%s: invalid NATS configuration: %v\n", service, err)
+		return nil, 2
+	}
+	conn, err := messaging.Connect(mcfg, service)
+	if err != nil {
+		log.Error("NATS unavailable at startup", "error_class", "nats_unavailable")
+		return nil, 1
+	}
+	sctx, scancel := context.WithTimeout(ctx, 30*time.Second)
+	defer scancel()
+	if err := conn.EnsureStream(sctx); err != nil {
+		conn.Close()
+		log.Error("cannot configure the JetStream stream", "error_class", "nats_stream")
+		return nil, 1
+	}
+	cons, err := conn.EnsureConsumer(sctx)
+	if err != nil {
+		conn.Close()
+		log.Error("cannot configure the JetStream consumer", "error_class", "nats_consumer")
+		return nil, 1
+	}
+
+	var registry *observability.Registry
+	if cfg.MetricsEnabled {
+		registry = observability.NewRegistry()
+		*mounts = append(*mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
+	}
+	m := relay.NewMetrics(registry)
+	pub, err := relay.NewPublisher(pool, conn, relay.DefaultPublisherConfig(), log, m)
+	if err == nil {
+		var fan *relay.FanOutConsumer
+		if fan, err = relay.NewFanOutConsumer(pool, cons, relay.DefaultConsumerConfig(), log, m); err == nil {
+			rctx, cancel := context.WithCancel(ctx)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); _ = pub.Run(rctx) }()
+			go func() { defer wg.Done(); _ = fan.Run(rctx) }()
+			log.Info("outbox relay started", "stream", mcfg.Stream)
+			return func() { cancel(); wg.Wait(); conn.Close() }, 0
+		}
+	}
+	conn.Close()
+	fmt.Fprintf(stderr, "%s: invalid relay configuration: %v\n", service, err)
+	return nil, 2
 }

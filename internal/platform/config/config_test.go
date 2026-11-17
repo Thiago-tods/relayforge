@@ -126,3 +126,26 @@ func TestRateLimitConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestDeliveryConfiguration(t *testing.T) {
+	cfg, err := LoadFrom(lookupFrom(nil), ":8080")
+	d := cfg.Delivery
+	if err != nil || d.Concurrency != 8 || d.BatchSize != 8 || d.PollInterval != time.Second || d.RecoveryInterval != 30*time.Second ||
+		d.LeaseDuration != 2*time.Minute || d.ShutdownGrace != 20*time.Second || d.RequestTimeout != 30*time.Second {
+		t.Fatalf("defaults: %+v %v", d, err)
+	}
+	cfg, err = LoadFrom(lookupFrom(map[string]string{"RELAYFORGE_DELIVERY_CONCURRENCY": "4", "RELAYFORGE_DELIVERY_LEASE": "5m"}), ":8080")
+	if err != nil || cfg.Delivery.Concurrency != 4 || cfg.Delivery.BatchSize != 4 || cfg.Delivery.LeaseDuration != 5*time.Minute {
+		t.Fatalf("overrides: %+v %v", cfg.Delivery, err)
+	}
+	for _, env := range []map[string]string{
+		{"RELAYFORGE_DELIVERY_CONCURRENCY": "0"}, {"RELAYFORGE_DELIVERY_CONCURRENCY": "65"}, {"RELAYFORGE_DELIVERY_CONCURRENCY": "x"},
+		{"RELAYFORGE_DELIVERY_BATCH_SIZE": "9"}, {"RELAYFORGE_DELIVERY_POLL_INTERVAL": "0"}, {"RELAYFORGE_DELIVERY_LEASE": "10s"},
+		{"RELAYFORGE_DELIVERY_LEASE": "40s", "RELAYFORGE_DELIVERY_REQUEST_TIMEOUT": "60s"}, {"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE": "-1s"},
+		{"RELAYFORGE_DELIVERY_REQUEST_TIMEOUT": "soon"},
+	} {
+		if _, err := LoadFrom(lookupFrom(env), ":8080"); err == nil {
+			t.Errorf("%v: expected error", env)
+		}
+	}
+}

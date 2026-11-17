@@ -8,5 +8,5 @@ import (
 )
 
 func main() {
-	os.Exit(runtime.Run("delivery-worker", ":8082", runtime.Options{RequireDatabase: false}))
+	os.Exit(runtime.Run("delivery-worker", ":8082", runtime.Options{RequireDatabase: true, RunDeliveryWorker: true}))
 }
