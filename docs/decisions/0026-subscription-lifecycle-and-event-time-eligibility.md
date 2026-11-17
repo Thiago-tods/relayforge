@@ -66,8 +66,10 @@ A destination's own status decides whether a request is sent:
 
 - Every event accepted while a subscription was active is eventually fanned out as long as the
   reconciliation lookback (48 h) has not passed. After that, nothing repairs it automatically.
-- Boundaries use transaction **start** times. If a subscribe or revoke transaction starts before an event's
-  transaction but commits after it, the outcome follows the start times, not the commit order. The error is
-  bounded by transaction duration (milliseconds) and is the same for fan-out and reconciliation.
+- Boundaries use transaction **start** times, not commit times. If a subscription transaction starts
+  before an event transaction but commits after it, the event-time comparison still uses the earlier
+  transaction-start timestamp. The reverse ordering can likewise differ from commit order. The discrepancy
+  can be as large as the duration of the relevant transaction(s); it is not inherently limited to milliseconds.
+  This is the chosen timestamp model, and the same rule is used by fan-out and reconciliation.
 - Clock steps on the database server can reorder timestamps; the database clock is assumed monotonic.
 - Delivery remains at-least-once. This ADR does not change that, and nothing here is exactly-once.
