@@ -238,9 +238,14 @@ func (s *Service) LoginFromIP(ctx context.Context, clientIP, email, password str
 }
 
 func (s *Service) releaseLoginReservations(ctx context.Context, buckets []loginBucket, now time.Time) error {
-	return s.pool.InTx(ctx, func(tx pgx.Tx) error {
+	// Cleanup must still run when the client disconnects or the request context
+	// is cancelled; bound it independently so abandoned requests do not consume
+	// the caller's failure budget for the rest of the window.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	return s.pool.InTx(cleanupCtx, func(tx pgx.Tx) error {
 		for _, b := range buckets {
-			if err := ratelimit.Release(ctx, tx, b.name, loginWindow, now); err != nil {
+			if err := ratelimit.Release(cleanupCtx, tx, b.name, loginWindow, now); err != nil {
 				return err
 			}
 		}
