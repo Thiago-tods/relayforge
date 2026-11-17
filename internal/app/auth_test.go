@@ -303,7 +303,7 @@ func TestConcurrentSuccessfulLoginsReleaseIndependentReservations(t *testing.T) 
 	const attempts = 5
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	successes, unexpected := 0
+	successes, unexpected := 0, 0
 	for range attempts {
 		wg.Add(1)
 		go func() {
