@@ -196,27 +196,56 @@ func (s *Service) Login(ctx context.Context, email, password string) (AuthResult
 //
 // Every credential failure returns ErrInvalidCredentials after comparable work,
 // so neither the response nor its timing reveals whether the account exists.
+var errLoginRateLimited = errors.New("login rate limit exceeded")
+
 func (s *Service) LoginFromIP(ctx context.Context, clientIP, email, password string) (AuthResult, error) {
 	buckets := s.loginBuckets(clientIP, email)
 	now := s.now()
-	for _, b := range buckets {
-		res, err := ratelimit.Exceeded(ctx, s.mustQuerier(), b.name, loginWindow, b.limit, now)
-		if err != nil {
-			return AuthResult{}, err
-		}
-		if !res.Allowed {
-			return AuthResult{}, ratelimit.Limited(res.RetryAfter)
-		}
-	}
-	res, err := s.login(ctx, email, password)
-	if errors.Is(err, ErrInvalidCredentials) {
+
+	// Reserve both account and address budgets atomically before doing the
+	// expensive password hash. Concurrent requests therefore cannot all observe
+	// the same pre-failure count and race past the limit.
+	var retryAfter time.Duration
+	err := s.pool.InTx(ctx, func(tx pgx.Tx) error {
 		for _, b := range buckets {
-			if rerr := ratelimit.Record(ctx, s.mustQuerier(), b.name, loginWindow, now); rerr != nil {
-				return AuthResult{}, rerr
+			res, err := ratelimit.Hit(ctx, tx, b.name, loginWindow, b.limit, now)
+			if err != nil {
+				return err
 			}
+			if !res.Allowed {
+				retryAfter = res.RetryAfter
+				return errLoginRateLimited // roll back every reservation in this attempt
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, errLoginRateLimited) {
+		return AuthResult{}, ratelimit.Limited(retryAfter)
+	}
+	if err != nil {
+		return AuthResult{}, err
+	}
+
+	res, err := s.login(ctx, email, password, buckets, now)
+	if err != nil && !errors.Is(err, ErrInvalidCredentials) {
+		// Database or hashing failures are not bad credentials. Release the
+		// reservation so transient server faults do not lock out a user.
+		if releaseErr := s.releaseLoginReservations(ctx, buckets, now); releaseErr != nil {
+			return AuthResult{}, errors.Join(err, releaseErr)
 		}
 	}
 	return res, err
+}
+
+func (s *Service) releaseLoginReservations(ctx context.Context, buckets []loginBucket, now time.Time) error {
+	return s.pool.InTx(ctx, func(tx pgx.Tx) error {
+		for _, b := range buckets {
+			if err := ratelimit.Release(ctx, tx, b.name, loginWindow, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 type loginBucket struct {
@@ -239,7 +268,7 @@ func (s *Service) loginBuckets(clientIP, email string) []loginBucket {
 	return out
 }
 
-func (s *Service) login(ctx context.Context, email, password string) (AuthResult, error) {
+func (s *Service) login(ctx context.Context, email, password string, buckets []loginBucket, reservationTime time.Time) (AuthResult, error) {
 	var user identity.User
 	found := false
 	if normalized, err := identity.NormalizeEmail(email); err == nil {
@@ -274,6 +303,13 @@ func (s *Service) login(ctx context.Context, email, password string) (AuthResult
 		var err error
 		if result, err = s.createSession(ctx, tx, user); err != nil {
 			return err
+		}
+		// A successful login must not consume the failed-attempt budget. Release
+		// the reservation in the same transaction as the new session.
+		for _, b := range buckets {
+			if err := ratelimit.Release(ctx, tx, b.name, loginWindow, reservationTime); err != nil {
+				return err
+			}
 		}
 		return audit.Record(ctx, tx, audit.Event{
 			ActorUserID: user.ID, Action: audit.UserLoginSucceeded, ResourceType: "user", ResourceID: user.ID,
