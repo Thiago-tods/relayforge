@@ -40,8 +40,10 @@ provider or email service can be used, and authentication must work fully locall
 
 ## Not implemented (deferred)
 
-Email verification, password reset, MFA, automatic login throttling (see SECURITY.md), session
+Email verification, password reset, MFA, session
 listing, "log out everywhere" and password change. None of them is claimed to exist.
+
+Login throttling was added in Phase 3 (ADR 0021).
 
 ## Consequences
 

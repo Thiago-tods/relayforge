@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -204,5 +205,63 @@ func TestReadinessReflectsDatabaseAndLivenessDoesNot(t *testing.T) {
 
 	if code := h.stop(t); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestServeAPIFailsClosedWithoutAValidEncryptionKey(t *testing.T) {
+	dbCfg := dbtest.NewDatabase(t)
+	for name, key := range map[string]string{"missing": "", "malformed": "%%%not-base64%%%", "wrong length": base64.StdEncoding.EncodeToString(make([]byte, 16))} {
+		env := map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL}
+		if key != "" {
+			env["RELAYFORGE_ENCRYPTION_KEY"] = key
+		}
+		h := start(t, Options{RequireDatabase: true, ServeAPI: true}, env)
+		code, ok := h.exited()
+		if !ok || code != 2 {
+			t.Errorf("%s key: exit = (%d, %v), want (2, true)", name, code, ok)
+		}
+		if key != "" && strings.Contains(h.stderr.String()+h.stdout.String(), key) {
+			t.Errorf("%s key: output echoes the key", name)
+		}
+	}
+	// The same applies in production.
+	h := start(t, Options{RequireDatabase: true, ServeAPI: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_ENV": "production",
+	})
+	if code, ok := h.exited(); !ok || code != 2 {
+		t.Fatalf("production without key: exit = (%d, %v)", code, ok)
+	}
+}
+
+func TestServeAPIMountsTheAPIAndOptionalMetrics(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	dbCfg := dbtest.NewDatabase(t)
+	env := map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_ENCRYPTION_KEY": key}
+
+	h := start(t, Options{RequireDatabase: true, ServeAPI: true}, env)
+	if h.addr == "" {
+		t.Fatalf("service did not start: %s", h.stderr)
+	}
+	if code, _ := get(t, h.addr, "/api/v1/auth/me"); code != http.StatusUnauthorized {
+		t.Fatalf("API must be mounted and require authentication, got %d", code)
+	}
+	if code, _ := get(t, h.addr, "/metrics"); code != http.StatusNotFound {
+		t.Fatalf("metrics must be off by default, got %d", code)
+	}
+	if code, _ := get(t, h.addr, "/healthz"); code != http.StatusOK {
+		t.Fatalf("healthz = %d", code)
+	}
+	if code := h.stop(t); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (pruner and pool must shut down cleanly)", code)
+	}
+
+	env["RELAYFORGE_METRICS_ENABLED"] = "true"
+	h2 := start(t, Options{RequireDatabase: true, ServeAPI: true}, env)
+	code, body := get(t, h2.addr, "/metrics")
+	if code != http.StatusOK || !strings.Contains(body, "relayforge_ingest_requests_total") {
+		t.Fatalf("metrics: %d %s", code, body)
+	}
+	if strings.Contains(body, key) {
+		t.Fatal("metrics expose the key")
 	}
 }

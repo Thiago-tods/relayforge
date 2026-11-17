@@ -17,6 +17,8 @@ import (
 	"github.com/Thiago-tods/relayforge/internal/audit"
 	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/identity"
+	"github.com/Thiago-tods/relayforge/internal/ratelimit"
+	"github.com/Thiago-tods/relayforge/internal/secretbox"
 	"github.com/Thiago-tods/relayforge/internal/tenancy"
 )
 
@@ -26,11 +28,20 @@ type Config struct {
 	SessionLifetime time.Duration
 	// InvitationLifetime is how long an invitation stays valid.
 	InvitationLifetime time.Duration
+	// Box encrypts ingestion signing secrets. Required for endpoint management.
+	Box *secretbox.Box
+	// LoginFailuresPerAccount and LoginFailuresPerIP cap failed logins per
+	// loginWindow. Zero disables the corresponding limit.
+	LoginFailuresPerAccount int
+	LoginFailuresPerIP      int
 }
 
 // DefaultConfig returns the documented defaults: 12 hour sessions, 7 day invitations.
 func DefaultConfig() Config {
-	return Config{SessionLifetime: 12 * time.Hour, InvitationLifetime: 7 * 24 * time.Hour}
+	return Config{
+		SessionLifetime: 12 * time.Hour, InvitationLifetime: 7 * 24 * time.Hour,
+		LoginFailuresPerAccount: 10, LoginFailuresPerIP: 30,
+	}
 }
 
 const (
@@ -39,6 +50,8 @@ const (
 	maxLoginPasswordBytes = 1024
 	touchInterval         = 5 * time.Minute
 	slugRetries           = 5
+	// loginWindow is the fixed window of the failed-login counters.
+	loginWindow = 15 * time.Minute
 )
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -167,10 +180,66 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (AuthResult, t
 	return result, org, nil
 }
 
-// Login verifies credentials and starts a session. Every failure returns
-// ErrInvalidCredentials after comparable work, so neither the response nor its
-// timing reveals whether the account exists.
+// Login verifies credentials and starts a session, without a client address.
+// See LoginFromIP.
 func (s *Service) Login(ctx context.Context, email, password string) (AuthResult, error) {
+	return s.LoginFromIP(ctx, "", email, password)
+}
+
+// LoginFromIP is Login with brute-force protection. Failed attempts are counted
+// per account and per client address in shared PostgreSQL counters (15 minute
+// fixed windows). Once a counter reaches its limit, further attempts get 429
+// without checking the password, even if it is correct. The account counter is
+// keyed on the hash of the normalized email whether or not the account exists,
+// so the behavior reveals nothing about which accounts exist. Trade-off: an
+// attacker who knows an email can lock that account for the rest of the window.
+//
+// Every credential failure returns ErrInvalidCredentials after comparable work,
+// so neither the response nor its timing reveals whether the account exists.
+func (s *Service) LoginFromIP(ctx context.Context, clientIP, email, password string) (AuthResult, error) {
+	buckets := s.loginBuckets(clientIP, email)
+	now := s.now()
+	for _, b := range buckets {
+		res, err := ratelimit.Exceeded(ctx, s.mustQuerier(), b.name, loginWindow, b.limit, now)
+		if err != nil {
+			return AuthResult{}, err
+		}
+		if !res.Allowed {
+			return AuthResult{}, ratelimit.Limited(res.RetryAfter)
+		}
+	}
+	res, err := s.login(ctx, email, password)
+	if errors.Is(err, ErrInvalidCredentials) {
+		for _, b := range buckets {
+			if rerr := ratelimit.Record(ctx, s.mustQuerier(), b.name, loginWindow, now); rerr != nil {
+				return AuthResult{}, rerr
+			}
+		}
+	}
+	return res, err
+}
+
+type loginBucket struct {
+	name  string
+	limit int
+}
+
+func (s *Service) loginBuckets(clientIP, email string) []loginBucket {
+	var out []loginBucket
+	if s.cfg.LoginFailuresPerAccount > 0 {
+		id := "invalid-email"
+		if normalized, err := identity.NormalizeEmail(email); err == nil {
+			id = normalized
+		}
+		out = append(out, loginBucket{ratelimit.Bucket("login-account", id), s.cfg.LoginFailuresPerAccount})
+	}
+	if s.cfg.LoginFailuresPerIP > 0 && clientIP != "" {
+		out = append(out, loginBucket{ratelimit.Bucket("login-ip", clientIP), s.cfg.LoginFailuresPerIP})
+	}
+	return out
+}
+
+func (s *Service) login(ctx context.Context, email, password string) (AuthResult, error) {
 	var user identity.User
 	found := false
 	if normalized, err := identity.NormalizeEmail(email); err == nil {

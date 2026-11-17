@@ -27,6 +27,13 @@ const (
 	MemberRoleChanged    = "organization.member.role_changed"
 	MemberRemoved        = "organization.member.removed"
 	OwnershipTransferred = "organization.ownership.transferred"
+
+	EndpointCreated       = "ingestion_endpoint.created"
+	EndpointUpdated       = "ingestion_endpoint.updated"
+	EndpointPaused        = "ingestion_endpoint.paused"
+	EndpointActivated     = "ingestion_endpoint.activated"
+	EndpointRevoked       = "ingestion_endpoint.revoked"
+	EndpointSecretRotated = "ingestion_endpoint.secret_rotated"
 )
 
 // Event is one audit record. OrganizationID, ActorUserID and ResourceID are

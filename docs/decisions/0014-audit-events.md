@@ -25,8 +25,8 @@ Accepted
 - **Tenant isolation.** `GET /organizations/{id}/audit-events` is permission-gated (OWNER and ADMIN)
   and the query filters by organization. Events without an organization (registration, login,
   logout) are never returned by it.
-- **Failed logins are not audited.** Without rate limiting, any anonymous caller could grow the table
-  without bound. Recording failures will be revisited together with login throttling.
+- **Failed logins are not audited.** Even with rate limiting, any anonymous caller could grow the table
+  without bound. Login throttling now exists (ADR 0021), but failures are still not audited; counters in PostgreSQL carry that signal.
 
 ## Consequences
 
