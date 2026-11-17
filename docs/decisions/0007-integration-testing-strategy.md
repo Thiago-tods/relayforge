@@ -27,6 +27,12 @@ Tests must be safe to run next to a developer's own data and must not be skipped
 - Migration failure behavior uses in-memory migration sets (`testing/fstest`) so failures can be
   exercised without adding broken files to the real migrations directory.
 
+- `dbtest` validates the server URL before connecting: postgres scheme, a user, one loopback host
+  (other hosts need `RELAYFORGE_TEST_ALLOW_REMOTE=1`), no production-looking database name, and only
+  `sslmode`, `connect_timeout` and `application_name` parameters. Errors never include the URL.
+- `dbtest` only creates names matching `rf_test_<12 hex digits>` and only drops names it created in
+  the current process, so it cannot drop a developer's database even if misconfigured.
+
 ## Consequences
 
 Integration tests are slower than unit tests but exercise real behavior, including concurrent

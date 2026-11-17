@@ -27,15 +27,19 @@ const checkTimeout = 2 * time.Second
 // ErrNotInitialized is returned when a Pool that was never opened is used.
 var ErrNotInitialized = errors.New("database pool is not initialized")
 
+// ErrClosed is returned when a handle is requested from a Pool that was closed.
+var ErrClosed = errors.New("database pool is closed")
+
 // Pool is a PostgreSQL connection pool with a single owner.
 type Pool struct {
 	pool *pgxpool.Pool
 	log  *slog.Logger
 
-	sqlOnce sync.Once
-	sqlDB   *sql.DB
-
-	closeOnce sync.Once
+	// mu guards sqlDB and closed so that SQLDB and Close cannot race and no
+	// handle can be created after Close.
+	mu     sync.Mutex
+	sqlDB  *sql.DB
+	closed bool
 }
 
 // Stats is a credential-free snapshot of pool usage.
@@ -111,27 +115,43 @@ func (p *Pool) Stats() Stats {
 }
 
 // SQLDB returns a database/sql handle backed by the same pool. It exists for
-// libraries, such as the migration runner, that require database/sql. It is
-// closed together with the Pool.
-func (p *Pool) SQLDB() *sql.DB {
-	p.sqlOnce.Do(func() { p.sqlDB = stdlib.OpenDBFromPool(p.pool) })
-	return p.sqlDB
+// libraries, such as the migration runner, that require database/sql. Every call
+// returns the same handle, which is closed together with the Pool. After Close it
+// returns ErrClosed instead of creating a new handle.
+func (p *Pool) SQLDB() (*sql.DB, error) {
+	if p == nil || p.pool == nil {
+		return nil, ErrNotInitialized
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil, ErrClosed
+	}
+	if p.sqlDB == nil {
+		p.sqlDB = stdlib.OpenDBFromPool(p.pool)
+	}
+	return p.sqlDB, nil
 }
 
-// Close releases the pool. It is safe to call more than once.
+// Close releases the pool and any database/sql handle. It is safe to call more
+// than once and concurrently with SQLDB.
 func (p *Pool) Close() {
-	if p == nil {
+	if p == nil || p.pool == nil {
 		return
 	}
-	p.closeOnce.Do(func() {
-		if p.sqlDB != nil {
-			if err := p.sqlDB.Close(); err != nil {
-				p.log.Warn("closing database/sql handle failed", "error", err)
-			}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.closed = true
+	if p.sqlDB != nil {
+		if err := p.sqlDB.Close(); err != nil {
+			p.log.Warn("closing database/sql handle failed", "error", err)
 		}
-		p.pool.Close()
-		p.log.Info("database pool closed")
-	})
+	}
+	p.pool.Close()
+	p.log.Info("database pool closed")
 }
 
 // redactedError carries a credential-free message while preserving the cause

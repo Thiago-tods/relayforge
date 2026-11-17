@@ -40,3 +40,27 @@ pipeline is exercised without inventing domain tables ahead of their phase.
 
 Schema changes require a new numbered file; edited, already-applied files are not detected as
 changed, so applied migrations must never be modified.
+
+## Baseline migration review
+
+Review of PR #5 asked whether `relayforge_set_updated_at()` belongs in Phase 1 or should arrive with
+the first table that uses it.
+
+Facts checked: migration `00001` exists only in one unmerged commit on
+`feature/phase-1-database-foundation`; PR #5 is open; it has not reached `main`, and it has only been
+applied to disposable CI and local test databases. Editing or removing it would therefore be safe.
+
+Decision: **keep it, unchanged.**
+
+- The migration pipeline needs at least one embedded migration to be usable: goose reports an error
+  for an empty migration set, so `cmd/migrate` and the embedded-migration tests need a baseline.
+- The alternative baselines are worse. A placeholder table would be exactly the empty schema this
+  phase avoids, and an empty `SELECT 1` migration proves nothing.
+- The function is tiny, has no data, depends on nothing, and has a lossless `Down`. Its cost if
+  unused is one small function, which a later migration can drop.
+- Phase 2 tables with an `updated_at` column will consume it, so it avoids creating the same
+  function inside the first domain migration.
+
+Rule going forward: once a migration is on `main`, it is immutable. Any change, including removing
+this function, must be a new migration. If no table uses the function by the time the first domain
+schema lands, the reviewer should require a new migration that drops it.

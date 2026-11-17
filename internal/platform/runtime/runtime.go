@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,25 +31,32 @@ type Options struct {
 // Run starts the named service and blocks until it receives SIGINT or SIGTERM
 // (or the server fails), then shuts down gracefully. It returns a process exit code.
 func Run(service, defaultHTTPAddr string, opts Options) int {
-	cfg, err := config.Load(defaultHTTPAddr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: invalid configuration: %v\n", service, err)
-		return 2
-	}
-	log := observability.NewLogger(os.Stdout, cfg.LogLevel, cfg.LogFormat, service)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return run(ctx, service, defaultHTTPAddr, opts, os.LookupEnv, os.Stdout, os.Stderr, nil)
+}
+
+// run is Run with its environment injected so it can be tested. It stops when
+// ctx is cancelled. ready, if not nil, is called with the bound listen address
+// once the HTTP server accepts connections, which lets tests use port 0.
+// Exit codes: 0 clean shutdown, 1 runtime failure, 2 invalid configuration.
+func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
+	lookup func(string) (string, bool), stdout, stderr io.Writer, ready func(addr string)) int {
+	cfg, err := config.LoadFrom(lookup, defaultHTTPAddr)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: invalid configuration: %v\n", service, err)
+		return 2
+	}
+	log := observability.NewLogger(stdout, cfg.LogLevel, cfg.LogFormat, service)
 
 	checks := map[string]httpserver.Check{}
 	if opts.RequireDatabase {
-		dbCfg, err := config.LoadDatabase()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: invalid database configuration: %v\n", service, err)
-			return 2
+		dbCfg, err := config.LoadDatabaseFrom(lookup)
+		if err == nil {
+			err = dbCfg.Validate()
 		}
-		if err := dbCfg.Validate(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: invalid database configuration: %v\n", service, err)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: invalid database configuration: %v\n", service, err)
 			return 2
 		}
 		pool, err := database.Open(ctx, dbCfg, log)
@@ -62,14 +71,23 @@ func Run(service, defaultHTTPAddr string, opts Options) int {
 
 	srv := httpserver.New(cfg.HTTPAddr, httpserver.NewHandler(log, checks), cfg.ReadHeaderTimeout)
 
+	ln, err := net.Listen("tcp", cfg.HTTPAddr)
+	if err != nil {
+		log.Error("http listen failed", "addr", cfg.HTTPAddr, "error", err)
+		return 1
+	}
+	log.Info("starting http server", "addr", ln.Addr().String(), "env", cfg.Env)
+
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("starting http server", "addr", cfg.HTTPAddr, "env", cfg.Env)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 		close(errCh)
 	}()
+	if ready != nil {
+		ready(ln.Addr().String())
+	}
 
 	select {
 	case err := <-errCh:

@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,59 +24,76 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
-func run(args []string) int {
+// run executes the command and returns the process exit code: 0 on success,
+// 2 for usage or configuration errors, 1 for runtime failures.
+func run(ctx context.Context, args []string, lookup func(string) (string, bool), stdout, stderr io.Writer) int {
 	if len(args) != 1 || (args[0] != "up" && args[0] != "status") {
-		fmt.Fprintln(os.Stderr, "usage: migrate <up|status>")
+		fmt.Fprintln(stderr, "usage: migrate <up|status>")
 		return 2
 	}
 
-	dbCfg, err := config.LoadDatabase()
+	dbCfg, err := config.LoadDatabaseFrom(lookup)
+	if err == nil {
+		err = dbCfg.Validate()
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: invalid database configuration: %v\n", err)
+		fmt.Fprintf(stderr, "migrate: invalid database configuration: %v\n", err)
 		return 2
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	log := observability.NewLogger(os.Stderr, "warn", "text", "migrate")
+	log := observability.NewLogger(stderr, "warn", "text", "migrate")
 	pool, err := database.Open(ctx, dbCfg, log)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+		fmt.Fprintf(stderr, "migrate: %v\n", err)
 		return 1
 	}
 	defer pool.Close()
 
-	m, err := database.NewMigrator(pool.SQLDB(), database.EmbeddedMigrations())
+	db, err := pool.SQLDB()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+		fmt.Fprintf(stderr, "migrate: %v\n", err)
+		return 1
+	}
+	m, err := database.NewMigrator(db, database.EmbeddedMigrations())
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate: %v\n", err)
 		return 1
 	}
 
 	if args[0] == "up" {
-		applied, err := m.Up(ctx)
-		for _, a := range applied {
-			fmt.Printf("applied %s (%s)\n", a.Source, a.Duration.Round(time.Millisecond))
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
-			return 1
-		}
-		if len(applied) == 0 {
-			fmt.Println("no pending migrations")
-		}
-		return 0
+		return runUp(ctx, m, stdout, stderr)
 	}
+	return runStatus(ctx, m, stdout, stderr)
+}
 
-	statuses, err := m.Status(ctx)
+func runUp(ctx context.Context, m *database.Migrator, stdout, stderr io.Writer) int {
+	applied, err := m.Up(ctx)
+	for _, a := range applied {
+		fmt.Fprintf(stdout, "applied %s (%s)\n", a.Source, a.Duration.Round(time.Millisecond))
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+		fmt.Fprintf(stderr, "migrate: %v\n", err)
 		return 1
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	if len(applied) == 0 {
+		fmt.Fprintln(stdout, "no pending migrations")
+	}
+	return 0
+}
+
+func runStatus(ctx context.Context, m *database.Migrator, stdout, stderr io.Writer) int {
+	statuses, err := m.Status(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate: %v\n", err)
+		return 1
+	}
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "VERSION\tSTATE\tAPPLIED AT\tFILE")
 	for _, s := range statuses {
 		state, at := "pending", "-"
@@ -85,7 +103,7 @@ func run(args []string) int {
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", s.Version, state, at, s.Source)
 	}
 	if err := w.Flush(); err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+		fmt.Fprintf(stderr, "migrate: %v\n", err)
 		return 1
 	}
 	return 0

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,7 +105,7 @@ func TestPoolLifecycle(t *testing.T) {
 	}
 
 	var one int
-	if err := pool.SQLDB().QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+	if err := mustSQLDB(t, pool).QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
 		t.Fatalf("query via database/sql: %v (got %d)", err, one)
 	}
 
@@ -140,5 +142,90 @@ func TestReadinessReflectsDatabaseState(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, cfg.URL) || strings.Contains(body, "pool") {
 		t.Fatalf("readiness response leaks internal details: %s", body)
+	}
+}
+
+func TestSQLDBReturnsSameHandleAndFailsAfterClose(t *testing.T) {
+	pool := openPool(t)
+
+	first, err := pool.SQLDB()
+	if err != nil {
+		t.Fatalf("SQLDB: %v", err)
+	}
+	second, err := pool.SQLDB()
+	if err != nil || first != second {
+		t.Fatalf("SQLDB must return the same handle (err %v)", err)
+	}
+
+	pool.Close()
+
+	if db, err := pool.SQLDB(); !errors.Is(err, database.ErrClosed) || db != nil {
+		t.Fatalf("SQLDB after Close = (%v, %v), want (nil, ErrClosed)", db, err)
+	}
+	if err := first.PingContext(testContext(t)); err == nil {
+		t.Fatal("handle obtained before Close must be unusable after Close")
+	}
+}
+
+func TestSQLDBAfterCloseWithoutPriorHandle(t *testing.T) {
+	pool := openPool(t)
+	pool.Close()
+	if db, err := pool.SQLDB(); !errors.Is(err, database.ErrClosed) || db != nil {
+		t.Fatalf("SQLDB after Close = (%v, %v), want (nil, ErrClosed)", db, err)
+	}
+}
+
+func TestSQLDBNilPool(t *testing.T) {
+	var p *database.Pool
+	if _, err := p.SQLDB(); !errors.Is(err, database.ErrNotInitialized) {
+		t.Fatalf("got %v, want ErrNotInitialized", err)
+	}
+}
+
+// TestConcurrentSQLDBAndClose is meaningful under the race detector: it
+// hammers SQLDB while Close runs, and asserts that no usable handle is
+// produced once Close has returned.
+func TestConcurrentSQLDBAndClose(t *testing.T) {
+	pool := openPool(t)
+
+	const callers = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var closed atomic.Bool
+
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 200 {
+				wasClosed := closed.Load()
+				db, err := pool.SQLDB()
+				switch {
+				case err == nil && db == nil:
+					t.Error("SQLDB returned nil handle without error")
+				case err != nil && !errors.Is(err, database.ErrClosed):
+					t.Errorf("unexpected error: %v", err)
+				case wasClosed && err == nil:
+					t.Error("SQLDB created a handle after Close returned")
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		pool.Close()
+		closed.Store(true)
+		pool.Close() // concurrent and repeated Close must be safe
+	}()
+
+	close(start)
+	wg.Wait()
+
+	if _, err := pool.SQLDB(); !errors.Is(err, database.ErrClosed) {
+		t.Fatalf("SQLDB after Close = %v, want ErrClosed", err)
 	}
 }

@@ -16,6 +16,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Real PostgreSQL integration tests and a PostgreSQL 17 service in CI.
 - ADRs 0003 to 0007.
 
+### Review fixes
+
+- `Pool.SQLDB()` now returns `(*sql.DB, error)` and is mutex-protected against `Close`; it returns
+  `ErrClosed` after closure.
+- `dbtest` validates the test server URL and only drops databases it created.
+- `runtime` and `cmd/migrate` gained injectable entry points and automated tests.
+
 ### Changed
 
 - Go module path is now `github.com/Thiago-tods/relayforge` (see ADR 0003).

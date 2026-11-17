@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"database/sql"
 	"io/fs"
 	"sync"
 	"testing"
@@ -13,11 +14,20 @@ import (
 
 func newMigrator(t *testing.T, pool *database.Pool, fsys fs.FS) *database.Migrator {
 	t.Helper()
-	m, err := database.NewMigrator(pool.SQLDB(), fsys)
+	m, err := database.NewMigrator(mustSQLDB(t, pool), fsys)
 	if err != nil {
 		t.Fatalf("new migrator: %v", err)
 	}
 	return m
+}
+
+func mustSQLDB(t *testing.T, pool *database.Pool) *sql.DB {
+	t.Helper()
+	db, err := pool.SQLDB()
+	if err != nil {
+		t.Fatalf("SQLDB: %v", err)
+	}
+	return db
 }
 
 func openPool(t *testing.T) *database.Pool {
@@ -78,7 +88,7 @@ func TestEmbeddedMigrationsApplyOnce(t *testing.T) {
 	}
 
 	var exists bool
-	err = pool.SQLDB().QueryRowContext(ctx,
+	err = mustSQLDB(t, pool).QueryRowContext(ctx,
 		"SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'relayforge_set_updated_at')").Scan(&exists)
 	if err != nil || !exists {
 		t.Fatalf("expected relayforge_set_updated_at to exist: %v (exists=%v)", err, exists)
@@ -117,7 +127,7 @@ func TestMigrationFailureIsReportedAndStopsRun(t *testing.T) {
 
 	// The failed migration runs in a transaction, so its partial work is rolled back.
 	var exists bool
-	if err := pool.SQLDB().QueryRowContext(ctx,
+	if err := mustSQLDB(t, pool).QueryRowContext(ctx,
 		"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 't_bad')").Scan(&exists); err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -145,7 +155,12 @@ func TestConcurrentMigrationsApplyEachMigrationOnce(t *testing.T) {
 				return
 			}
 			defer pool.Close()
-			m, err := database.NewMigrator(pool.SQLDB(), database.EmbeddedMigrations())
+			db, err := pool.SQLDB()
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			m, err := database.NewMigrator(db, database.EmbeddedMigrations())
 			if err != nil {
 				errs[i] = err
 				return

@@ -27,6 +27,9 @@ created in individual packages would waste connections and complicate shutdown.
 - Errors and logs never contain the connection URL or password. HTTP responses report only
   `ok` or `unavailable`.
 
+- `Pool.SQLDB()` and `Pool.Close()` share one mutex. `SQLDB` returns the same handle until `Close`;
+  afterwards it returns `ErrClosed`, so a closed pool can never produce a new usable handle.
+
 ## Consequences
 
 Components receive the shared `*database.Pool` instead of opening their own. The `cmd/migrate`
