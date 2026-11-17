@@ -17,6 +17,12 @@ adheres to [Semantic Versioning](https://semver.org/).
   outbox publisher (publish acknowledgment before `published_at`), idempotent fan-out and PostgreSQL
   reconciliation (ADR 0025). `cmd/outbox-publisher` now runs them.
 - Migration 00015: `subscriptions` (tenant-safe composite foreign keys, revoked, never deleted).
+- Migration 00016: subscription lifecycle. One ACTIVE subscription per endpoint/destination pair (partial
+  unique index), re-subscription after revocation, immutable revoked history, valid intervals.
+- Fan-out and reconciliation now use the event-time rule "active at acceptance" (ADR 0026), so revoking a
+  subscription no longer drops events accepted while it was active.
+- `delivery.Subscribe` and `delivery.RevokeSubscription`.
+- Fixed NATS tests failing on a shared server ("subjects overlap"): the stream subject is now configurable.
 - Label-free delivery, outbox, fan-out and reconciliation metrics; gauges in the metrics registry.
 - Dependencies: `nats.go` (client) and `nats-server` (embedded server for tests only) with their transitive modules.
 - CI starts a disposable NATS JetStream container.

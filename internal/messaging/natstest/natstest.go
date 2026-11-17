@@ -48,15 +48,20 @@ func URL(t testing.TB) string {
 
 // Config returns a messaging configuration with names unique to this test and
 // short timings suitable for tests.
-func Config(t testing.TB) messaging.Config {
+func Config(t testing.TB) messaging.Config { return ConfigAt(t, URL(t)) }
+
+// ConfigAt is Config for an already running server, so several tests or
+// connections can share it.
+func ConfigAt(t testing.TB, url string) messaging.Config {
 	t.Helper()
 	suffix := make([]byte, 5)
 	if _, err := rand.Read(suffix); err != nil {
 		t.Fatal(err)
 	}
-	cfg := messaging.DefaultConfig(URL(t))
+	cfg := messaging.DefaultConfig(url)
 	cfg.Stream = "T_" + hex.EncodeToString(suffix)
 	cfg.Consumer = "c_" + hex.EncodeToString(suffix)
+	cfg.Subject = "relayforge.test." + hex.EncodeToString(suffix) // streams on a shared server must not overlap
 	cfg.AckWait = 2 * time.Second
 	cfg.BackOff = []time.Duration{3 * time.Second, 3 * time.Second}
 	cfg.MaxDeliver = 4

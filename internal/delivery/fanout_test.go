@@ -220,14 +220,13 @@ func TestReconcileIgnoresEventsOutsideTheLookbackAndHonorsTheLimit(t *testing.T)
 	f := newFixture(t)
 	org, user := f.owner.Org.ID, f.owner.Principal.User.ID
 	d := f.destination(t, org, user, "D")
-	f.subscribe(t, org, d.ID)
+	f.insertSub(t, org, d.ID, time.Now().UTC(), sub{-60 * 24 * 60, nil}) // subscribed 60 days ago
 	var ids []string
 	for i := 0; i < 5; i++ {
 		ids = append(ids, f.event(t, fmt.Sprintf(`{"i":%d}`, i)))
 	}
 	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '10 minutes'")
 	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '30 days' WHERE id = $1", ids[0])
-	f.env.Exec(t, "UPDATE subscriptions SET created_at = now() - interval '60 days'")
 
 	var n int64
 	if err := f.env.Pool.InTx(context.Background(), func(tx pgx.Tx) error {

@@ -185,3 +185,33 @@ func TestStreamIsProtectedFromDeletion(t *testing.T) {
 		t.Fatalf("stream configuration is not hardened: %+v", c)
 	}
 }
+
+// Regression for the CI failure "subjects overlap with an existing stream": tests
+// share one server, so every stream needs its own subject.
+func TestStreamsOnASharedServerNeedDistinctSubjects(t *testing.T) {
+	url := natstest.URL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	open := func(cfg messaging.Config) *messaging.Conn {
+		c, err := messaging.Connect(cfg, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+	a, b := natstest.ConfigAt(t, url), natstest.ConfigAt(t, url)
+	if a.Subject == b.Subject {
+		t.Fatal("test configurations must not share a subject")
+	}
+	if err := open(a).EnsureStream(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := open(b).EnsureStream(ctx); err != nil {
+		t.Fatalf("a second stream with its own subject must be accepted: %v", err)
+	}
+	b.Stream, b.Subject = "OTHER_"+b.Stream, a.Subject
+	if err := open(b).EnsureStream(ctx); err == nil {
+		t.Fatal("the server accepted overlapping subjects; the isolation this test guards is not needed")
+	}
+}

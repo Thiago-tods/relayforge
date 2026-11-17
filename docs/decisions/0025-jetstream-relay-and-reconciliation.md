@@ -33,13 +33,13 @@ commit**. A failure sends a negative acknowledgment. A malformed message is term
 cannot fix it. The organization is part of the fan-out query, so a message naming the wrong tenant creates
 nothing.
 
-**Fan-out** inserts one `PENDING` delivery per `ACTIVE` subscription whose destination is not revoked, with
-`ON CONFLICT (event_id, destination_id) DO NOTHING`. A subscription applies only to events received after it
-was created. Subscriptions come from migration 00015 and are revoked, never deleted.
+**Fan-out** inserts one `PENDING` delivery per subscription that was active when the event was accepted,
+with `ON CONFLICT (event_id, destination_id) DO NOTHING`. The exact event-time rule, re-subscription and
+the separation from destination status are defined in ADR 26. Subscriptions are revoked, never deleted.
 
 **Reconciliation.** JetStream may lose, expire or give up on a message, and a publisher may fail
-permanently. Every minute the consumer process runs `delivery.Reconcile`, which creates the missing
-deliveries for events received between 48 h and 2 min ago (limit 500 per sweep). The grace period leaves
+permanently. Every minute the consumer process runs `delivery.Reconcile`, which applies the same event-time rule and
+creates the missing deliveries for events received between 48 h and 2 min ago (limit 500 per sweep). The grace period leaves
 recent events to the normal path. It is idempotent and safe to run from several processes.
 
 ## Guarantees
@@ -53,4 +53,5 @@ recent events to the normal path. It is idempotent and safe to run from several 
 
 - An event older than the lookback whose message and fan-out were both lost is not repaired automatically.
 - NATS needs a persistent volume for the file store; without it the reconciler is the only safety net.
-- Tests use an embedded `nats-server`; CI also starts a real JetStream container.
+- Tests use an embedded `nats-server`; CI also starts a real JetStream container. A server rejects streams
+  with overlapping subjects, so every test stream has its own subject (`Config.Subject`).

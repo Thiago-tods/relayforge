@@ -107,8 +107,8 @@ have fixed names and no labels: `relayforge_delivery_*`, `relayforge_outbox_*`, 
 
 ### Limitations of this phase
 
-- There is no HTTP API yet to create destinations or subscriptions; both are rows managed by migrations
-  and tests. A management API is the next phase.
+- There is no HTTP API yet to create destinations or subscriptions. `delivery.Subscribe` and
+  `delivery.RevokeSubscription` implement the lifecycle (ADR 0026); the API and its authorization come next.
 - Destinations on private addresses are not supported (ADR 0023).
 - Delivery is at-least-once with no ordering guarantee. Receivers must deduplicate on
   `X-RelayForge-Delivery-Id` (ADR 0022 and 0024).

@@ -18,14 +18,18 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Subject carries one message per accepted webhook event.
-const Subject = "relayforge.events.accepted"
+// DefaultSubject carries one message per accepted webhook event. A JetStream server
+// refuses two streams whose subjects overlap, so tests that share a server use
+// distinct subjects (Config.Subject).
+const DefaultSubject = "relayforge.events.accepted"
 
 // Config describes the stream and the fan-out consumer. Zero values are not valid;
 // use DefaultConfig.
 type Config struct {
 	URL    string
 	Stream string
+	// Subject is the single subject the stream captures.
+	Subject string
 	// Consumer is the durable consumer name. Durable means its position survives restarts.
 	Consumer string
 	// Duplicates is JetStream's deduplication window for Nats-Msg-Id. A publisher
@@ -52,7 +56,7 @@ type Config struct {
 // DefaultConfig returns the documented defaults.
 func DefaultConfig(url string) Config {
 	return Config{
-		URL: url, Stream: "RELAYFORGE_EVENTS", Consumer: "delivery-fanout",
+		URL: url, Stream: "RELAYFORGE_EVENTS", Subject: DefaultSubject, Consumer: "delivery-fanout",
 		Duplicates: 2 * time.Hour, MaxAge: 24 * time.Hour, MaxDeliver: 10, AckWait: 30 * time.Second,
 		BackOff:    []time.Duration{30 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute},
 		FetchBatch: 16, FetchWait: 2 * time.Second,
@@ -64,6 +68,8 @@ func (c Config) Validate() error {
 	switch {
 	case c.URL == "":
 		return errors.New("NATS URL is required")
+	case c.Subject == "":
+		return errors.New("subject is required")
 	case c.Stream == "" || c.Consumer == "":
 		return errors.New("stream and consumer names are required")
 	case c.Duplicates <= 0 || c.MaxAge <= 0 || c.AckWait <= 0 || c.FetchWait <= 0:
@@ -120,7 +126,7 @@ func (c *Conn) Close() {
 //	deny delete  and deny purge: nothing removes history except MaxAge
 func (c *Conn) EnsureStream(ctx context.Context) error {
 	_, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: c.cfg.Stream, Subjects: []string{Subject}, Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy,
+		Name: c.cfg.Stream, Subjects: []string{c.cfg.Subject}, Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy,
 		MaxAge: c.cfg.MaxAge, Duplicates: c.cfg.Duplicates, Replicas: 1, Discard: jetstream.DiscardOld,
 		DenyDelete: true, DenyPurge: true, Description: "Accepted webhook events (PostgreSQL is the source of truth)",
 	})
@@ -134,7 +140,7 @@ func (c *Conn) EnsureStream(ctx context.Context) error {
 // acknowledgment, so a nil return means JetStream stored the message. Publishing
 // the same id inside the duplicate window is acknowledged without storing a second copy.
 func (c *Conn) PublishAck(ctx context.Context, msgID string, data []byte) (duplicate bool, err error) {
-	ack, err := c.js.PublishMsg(ctx, &nats.Msg{Subject: Subject, Data: data}, jetstream.WithMsgID(msgID))
+	ack, err := c.js.PublishMsg(ctx, &nats.Msg{Subject: c.cfg.Subject, Data: data}, jetstream.WithMsgID(msgID))
 	if err != nil {
 		return false, fmt.Errorf("publish: %w", err)
 	}
@@ -169,7 +175,7 @@ type Consumer struct {
 func (c *Conn) EnsureConsumer(ctx context.Context) (*Consumer, error) {
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.cfg.Stream, jetstream.ConsumerConfig{
 		Durable: c.cfg.Consumer, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverAllPolicy,
-		FilterSubject: Subject, AckWait: c.cfg.AckWait, MaxDeliver: c.cfg.MaxDeliver, BackOff: c.cfg.BackOff,
+		FilterSubject: c.cfg.Subject, AckWait: c.cfg.AckWait, MaxDeliver: c.cfg.MaxDeliver, BackOff: c.cfg.BackOff,
 		MaxAckPending: c.cfg.FetchBatch * 4,
 	})
 	if err != nil {
