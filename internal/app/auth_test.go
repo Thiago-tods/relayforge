@@ -287,6 +287,49 @@ func TestSuccessfulLoginReleasesItsRateLimitReservation(t *testing.T) {
 	}
 }
 
+func TestConcurrentSuccessfulLoginsReleaseIndependentReservations(t *testing.T) {
+	env := apptest.New(t)
+	if _, err := register(t, env, validInput("parallel-success@example.com")); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := env.Svc.LoginFromIP(bg, "203.0.113.12", "parallel-success@example.com", "wrong password"); err == nil {
+			t.Fatal("wrong password unexpectedly succeeded")
+		}
+	}
+
+	const attempts = 10
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes, unexpected := 0, 0
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := env.Svc.LoginFromIP(bg, "203.0.113.12", "parallel-success@example.com", apptest.Password)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				successes++
+			} else {
+				unexpected++
+			}
+		}()
+	}
+	wg.Wait()
+	if successes != attempts || unexpected != 0 {
+		t.Fatalf("successful logins=%d unexpected failures=%d; want %d, 0", successes, unexpected, attempts)
+	}
+
+	accountBucket := ratelimit.Bucket("login-account", "parallel-success@example.com")
+	ipBucket := ratelimit.Bucket("login-ip", "203.0.113.12")
+	for _, bucket := range []string{accountBucket, ipBucket} {
+		if got := env.Count(t, "SELECT count FROM rate_limit_counters WHERE bucket = $1", bucket); got != 5 {
+			t.Errorf("bucket %q count = %d after successful logins, want 5 actual failures", bucket, got)
+		}
+	}
+}
+
 func TestAuthenticateAcceptsOnlyLiveSessions(t *testing.T) {
 	env := apptest.New(t)
 	u := env.Register(t, "session@example.com")
