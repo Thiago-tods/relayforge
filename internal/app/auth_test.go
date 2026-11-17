@@ -298,10 +298,12 @@ func TestConcurrentSuccessfulLoginsReleaseIndependentReservations(t *testing.T) 
 		}
 	}
 
-	const attempts = 10
+	// Five failed attempts have consumed half of the account/IP budget.
+	// Exactly five concurrent reservations remain available in this window.
+	const attempts = 5
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	successes, unexpected := 0, 0
+	successes, unexpected := 0
 	for range attempts {
 		wg.Add(1)
 		go func() {
