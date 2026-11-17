@@ -13,10 +13,13 @@ package ratelimit
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
@@ -96,15 +99,21 @@ func Record(ctx context.Context, db database.Querier, bucket string, window time
 // the same transaction as the successful session creation when possible.
 func Release(ctx context.Context, db database.Querier, bucket string, window time.Duration, now time.Time) error {
 	start := windowStart(now, window)
-	tag, err := db.Exec(ctx,
-		"UPDATE rate_limit_counters SET count = count - 1 WHERE bucket = $1 AND window_start = $2 AND count > 1",
-		bucket, start)
+	var remaining int
+	err := db.QueryRow(ctx,
+		"UPDATE rate_limit_counters SET count = count - 1 WHERE bucket = $1 AND window_start = $2 AND count > 0 RETURNING count",
+		bucket, start).Scan(&remaining)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // the window was already pruned or the reservation was absent
+	}
 	if err != nil {
 		return fmt.Errorf("release rate limit reservation: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if remaining == 0 {
+		// The decrement locks the row until the surrounding transaction commits.
+		// A concurrent upsert waits, then inserts a fresh row after this delete.
 		if _, err := db.Exec(ctx,
-			"DELETE FROM rate_limit_counters WHERE bucket = $1 AND window_start = $2 AND count = 1",
+			"DELETE FROM rate_limit_counters WHERE bucket = $1 AND window_start = $2 AND count = 0",
 			bucket, start); err != nil {
 			return fmt.Errorf("delete released rate limit reservation: %w", err)
 		}
