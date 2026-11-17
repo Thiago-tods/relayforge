@@ -476,92 +476,94 @@ const attemptInsert = "INSERT INTO delivery_attempts (organization_id, delivery_
 
 func TestDeliveryAttemptConstraints(t *testing.T) {
 	f := newDeliveryFixture(t)
-	d := f.pending(t)
-	d.attempts, d.status, d.lease, d.token, d.by = 2, "IN_FLIGHT", inFlightLease, tokenExpr, "'w'"
-	deliveryID := f.mustDelivery(t, d)
-	otherOrgDelivery := f.mustDelivery(t, dv{org: f.org2, event: f.newEvent(t, f.org2, f.ep2), dest: f.dest2})
+	// A real history: attempt 1 was abandoned and the delivery was claimed again.
+	deliveryID := f.inFlightAt(t, f.orgID, f.dest1, f.ep1, 2)
+	otherOrgDelivery := f.inFlightAt(t, f.org2, f.dest2, f.ep2, 1)
 	var none any
 
-	f.accept(t, "attempt 1 (network error)", attemptInsert, f.orgID, deliveryID, 1, "NETWORK_ERROR", none, 40)
-	f.accept(t, "attempt 2 (server error)", attemptInsert, f.orgID, deliveryID, 2, "HTTP_ERROR", 503, 90)
+	f.accept(t, "the current attempt (2)", attemptInsert, f.orgID, deliveryID, 2, "HTTP_ERROR", 503, 90)
 	f.reject(t, "duplicate attempt number", attemptInsert, f.orgID, deliveryID, 2, "HTTP_ERROR", 500, 5)
 	f.reject(t, "attempt number zero", attemptInsert, f.orgID, deliveryID, 0, "NETWORK_ERROR", none, 5)
 	f.reject(t, "negative attempt number", attemptInsert, f.orgID, deliveryID, -1, "NETWORK_ERROR", none, 5)
 	f.reject(t, "attempt beyond the claimed count", attemptInsert, f.orgID, deliveryID, 3, "NETWORK_ERROR", none, 5)
 
 	// The history must reference the delivery in its own organization.
-	f.reject(t, "organization does not own the delivery", attemptInsert, f.org2, deliveryID, 1, "NETWORK_ERROR", none, 5)
+	f.reject(t, "organization does not own the delivery", attemptInsert, f.org2, deliveryID, 2, "NETWORK_ERROR", none, 5)
 	f.reject(t, "delivery of another organization", attemptInsert, f.orgID, otherOrgDelivery, 1, "NETWORK_ERROR", none, 5)
 	f.reject(t, "unknown delivery", attemptInsert, f.orgID, "00000000-0000-4000-8000-000000000000", 1, "NETWORK_ERROR", none, 5)
-	f.reject(t, "unknown organization", attemptInsert, "00000000-0000-4000-8000-000000000000", deliveryID, 1, "NETWORK_ERROR", none, 5)
+	f.reject(t, "unknown organization", attemptInsert, "00000000-0000-4000-8000-000000000000", deliveryID, 2, "NETWORK_ERROR", none, 5)
+	f.accept(t, "the owning organization", attemptInsert, f.org2, otherOrgDelivery, 1, "NETWORK_ERROR", none, 5)
 
 	// An attempt can only be recorded for a delivery that was claimed.
 	unclaimed := f.mustDelivery(t, f.pending(t))
 	f.reject(t, "attempt for a delivery that was never claimed", attemptInsert, f.orgID, unclaimed, 1, "NETWORK_ERROR", none, 5)
 
-	f.reject(t, "negative duration", attemptInsert, f.orgID, otherOrgDelivery, 1, "TIMEOUT", none, -1)
+	third := f.inFlightAt(t, f.orgID, f.dest1, f.ep1, 1)
+	f.reject(t, "negative duration", attemptInsert, f.orgID, third, 1, "TIMEOUT", none, -1)
 	f.reject(t, "finished before started",
 		"INSERT INTO delivery_attempts (organization_id, delivery_id, attempt_number, started_at, finished_at, outcome, duration_ms) VALUES ($1,$2,1, now(), now() - interval '1 hour', 'TIMEOUT', 5)",
-		f.orgID, deliveryID)
+		f.orgID, third)
 }
 
 func TestAttemptOutcomesMatchTheirHTTPStatus(t *testing.T) {
 	f := newDeliveryFixture(t)
-	d := f.pending(t)
-	d.attempts, d.max, d.status, d.lease, d.token, d.by = 40, 50, "IN_FLIGHT", inFlightLease, tokenExpr, "'w'"
-	id := f.mustDelivery(t, d)
+	id := f.inFlightAt(t, f.orgID, f.dest1, f.ep1, 1)
 	var none any
-	n := 0
+	n := 1 // the delivery's current attempt number
 	try := func(outcome string, status any, ok bool) {
 		t.Helper()
-		n++
 		name := fmt.Sprintf("%s with status %v", outcome, status)
-		if ok {
-			f.accept(t, name, attemptInsert, f.orgID, id, n, outcome, status, 1)
-		} else {
+		if !ok {
 			f.reject(t, name, attemptInsert, f.orgID, id, n, outcome, status, 1)
+			return
 		}
+		f.accept(t, name, attemptInsert, f.orgID, id, n, outcome, status, 1)
+		f.retryAndClaim(t, id) // a new attempt number needs a retry and a new claim
+		n++
 	}
 	// These rules mirror delivery.OutcomeFromHTTPStatus.
-	try("SUCCESS", 200, true)
-	try("SUCCESS", 299, true)
 	try("SUCCESS", 500, false)
 	try("SUCCESS", none, false)
-	try("REDIRECT", 302, true)
+	try("SUCCESS", 200, true)
+	try("SUCCESS", 299, true)
 	try("REDIRECT", 200, false)
 	try("REDIRECT", none, false)
-	try("HTTP_ERROR", 404, true)
-	try("HTTP_ERROR", 599, true)
+	try("REDIRECT", 302, true)
 	try("HTTP_ERROR", 200, false)
 	try("HTTP_ERROR", 302, false)
 	try("HTTP_ERROR", none, false)
-	try("NETWORK_ERROR", none, true)
+	try("HTTP_ERROR", 404, true)
+	try("HTTP_ERROR", 599, true)
 	try("NETWORK_ERROR", 500, false)
+	try("NETWORK_ERROR", none, true)
 }
 
 func TestEveryDeliveryOutcomeIsRepresentable(t *testing.T) {
 	f := newDeliveryFixture(t)
-	d := f.pending(t)
-	d.attempts, d.max, d.status, d.lease, d.token, d.by = 8, 8, "IN_FLIGHT", inFlightLease, tokenExpr, "'w'"
-	id := f.mustDelivery(t, d)
+	id := f.inFlightAt(t, f.orgID, f.dest1, f.ep1, 1)
 	var none any
-	outcomes := map[delivery.Outcome]any{
-		delivery.OutcomeSuccess: 204, delivery.OutcomeRedirect: 301, delivery.OutcomeHTTPError: 500,
-		delivery.OutcomeNetworkError: none, delivery.OutcomeTimeout: none, delivery.OutcomeBlockedByPolicy: none, delivery.OutcomeAbandoned: none,
+	outcomes := []struct {
+		o delivery.Outcome
+		s any
+	}{
+		{delivery.OutcomeSuccess, 204}, {delivery.OutcomeRedirect, 301}, {delivery.OutcomeHTTPError, 500},
+		{delivery.OutcomeNetworkError, none}, {delivery.OutcomeTimeout, none}, {delivery.OutcomeBlockedByPolicy, none},
+		{delivery.OutcomeAbandoned, none},
 	}
-	n := 0
-	for outcome, status := range outcomes {
+	n := 1
+	for _, c := range outcomes {
+		f.accept(t, string(c.o), attemptInsert, f.orgID, id, n, string(c.o), c.s, 3)
+		f.retryAndClaim(t, id)
 		n++
-		f.accept(t, string(outcome), attemptInsert, f.orgID, id, n, string(outcome), status, 3)
 	}
-	f.reject(t, "an outcome Go does not define", attemptInsert, f.orgID, id, 8, "EXPLODED", none, 3)
-	f.reject(t, "lowercase outcome", attemptInsert, f.orgID, id, 8, "success", 200, 3)
-	// The status codes the Go classifier derives are accepted by the schema.
+	f.reject(t, "an outcome Go does not define", attemptInsert, f.orgID, id, n, "EXPLODED", none, 3)
+	f.reject(t, "lowercase outcome", attemptInsert, f.orgID, id, n, "success", 200, 3)
+	// Every status code the Go classifier maps to an outcome is accepted with that outcome.
 	for _, code := range []int{200, 204, 299, 301, 399, 400, 404, 429, 500, 599} {
 		o := delivery.OutcomeFromHTTPStatus(code)
-		if o == delivery.OutcomeSuccess && (code < 200 || code > 299) {
-			t.Fatalf("test table inconsistent for %d", code)
-		}
+		f.accept(t, fmt.Sprintf("Go maps %d to %s", code, o), attemptInsert, f.orgID, id, n, string(o), code, 1)
+		f.retryAndClaim(t, id)
+		n++
 	}
 }
 
@@ -732,7 +734,7 @@ func TestRollbackOfDeliveryMigrationsAndReapply(t *testing.T) {
 			t.Errorf("table %s must be gone after the rollback", tbl)
 		}
 	}
-	for _, fn := range []string{"relayforge_enforce_delivery_transition", "relayforge_check_delivery_attempt", "relayforge_reject_attempt_change"} {
+	for _, fn := range []string{"relayforge_enforce_delivery_transition", "relayforge_check_delivery_attempt", "relayforge_reject_attempt_change", "relayforge_reject_row_removal"} {
 		if env.Count(t, "SELECT count(*) FROM pg_proc WHERE proname = $1", fn) != 0 {
 			t.Errorf("function %s must be dropped by the rollback", fn)
 		}
