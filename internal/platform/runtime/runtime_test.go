@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/database/dbtest"
 	"github.com/Thiago-tods/relayforge/internal/messaging/natstest"
+	"github.com/Thiago-tods/relayforge/internal/platform/config"
 )
 
 const waitTimeout = 20 * time.Second
@@ -22,8 +26,52 @@ type harness struct {
 	addr   string
 	cancel context.CancelFunc
 	done   chan int
-	stdout *bytes.Buffer
-	stderr *bytes.Buffer
+	stdout *syncBuffer
+	stderr *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer safe for a service writing logs while a test reads them.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// migratedDatabase creates a disposable database with every migration applied, for
+// services that run queries (the delivery worker and the outbox relay).
+func migratedDatabase(t *testing.T) config.Database {
+	t.Helper()
+	cfg := dbtest.NewDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := database.Open(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	db, err := pool.SQLDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := database.NewMigrator(db, database.EmbeddedMigrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return cfg
 }
 
 func envLookup(env map[string]string) func(string) (string, bool) {
@@ -40,7 +88,7 @@ func start(t *testing.T, opts Options, env map[string]string) *harness {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &harness{cancel: cancel, done: make(chan int, 1), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	h := &harness{cancel: cancel, done: make(chan int, 1), stdout: &syncBuffer{}, stderr: &syncBuffer{}}
 	ready := make(chan string, 1)
 	go func() {
 		h.done <- run(ctx, "test-service", ":0", opts, envLookup(merged), h.stdout, h.stderr,
@@ -268,7 +316,7 @@ func TestServeAPIMountsTheAPIAndOptionalMetrics(t *testing.T) {
 }
 
 func TestDeliveryWorkerRequiresTheEncryptionKeyAndShutsDownCleanly(t *testing.T) {
-	dbCfg := dbtest.NewDatabase(t)
+	dbCfg := migratedDatabase(t)
 	h := start(t, Options{RequireDatabase: true, RunDeliveryWorker: true}, map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL})
 	if code, ok := h.exited(); !ok || code != 2 {
 		t.Fatalf("without a key: exit = (%d, %v), want (2, true)", code, ok)
@@ -295,7 +343,7 @@ func TestDeliveryWorkerRequiresTheEncryptionKeyAndShutsDownCleanly(t *testing.T)
 }
 
 func TestRelayRequiresNATSAndShutsDownCleanly(t *testing.T) {
-	dbCfg := dbtest.NewDatabase(t)
+	dbCfg := migratedDatabase(t)
 	h := start(t, Options{RequireDatabase: true, RunRelay: true}, map[string]string{"RELAYFORGE_DATABASE_URL": dbCfg.URL})
 	if code, ok := h.exited(); !ok || code != 2 {
 		t.Fatalf("without a NATS URL: exit = (%d, %v), want (2, true)", code, ok)
