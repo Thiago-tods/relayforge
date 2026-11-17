@@ -17,3 +17,29 @@ We aim to acknowledge reports within 5 business days.
 ## Supported versions
 
 RelayForge is pre-release. Only the `main` branch receives security fixes.
+
+## Authentication hardening status
+
+Implemented: Argon2id password hashing, opaque revocable sessions, hardened cookies, CSRF tokens,
+generic login failures with equalized timing, tenant isolation, RBAC, one-time expiring invitations
+and append-only audit events (ADRs 0008 to 0014).
+
+**Not implemented (follow-ups):**
+
+- **Login rate limiting and account lockout.** Argon2id with a bounded number of concurrent hashes
+  limits resource use, but nothing yet slows credential guessing. A PostgreSQL-backed counter per
+  account and per network address is planned; an in-memory limiter was rejected because it would
+  silently stop protecting a multi-instance deployment.
+- Email verification, password reset and MFA.
+- Breached-password screening.
+- Automated invitation delivery (tokens are returned once to the inviting caller).
+
+Treat the API as unsuitable for exposure to the public internet until login rate limiting exists.
+
+## Frontend dependency audit policy
+
+CI fails on high-severity advisories in production frontend dependencies (`npm audit --omit=dev`).
+Development-only tooling is audited in an informational step that does not block the build, because
+advisories there can be published before a patched release exists (for example `picomatch`
+GHSA-fc5q-39xc-vjpf on 2026-11-17, no fixed version at the time). Re-enable blocking on all
+dependencies once a patched release is available.

@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 2: core domain)
+
+- Users, sessions, organizations, memberships, invitations and audit events (migrations 00002 to 00006).
+- First-party authentication: Argon2id password hashing, opaque revocable sessions with a 12 hour
+  absolute lifetime, hardened cookies and synchronizer-token CSRF protection.
+- `/api/v1` endpoints for authentication, organizations, members, invitations, ownership transfer
+  and audit events, with strict tenant isolation and pagination.
+- Centralized RBAC policy with the roles OWNER, ADMIN, DEVELOPER and VIEWER; exactly one owner per
+  organization, protected by a unique index and transactional ownership transfer.
+- `RELAYFORGE_SESSION_LIFETIME` and `RELAYFORGE_COOKIE_SECURE` settings.
+- ADRs 0008 to 0014.
+
+### Not included
+
+Email verification, password reset, MFA, automated invitation email, login rate limiting,
+leaving an organization, and organization deletion.
+
 ### Added (Phase 1: database foundation)
 
 - PostgreSQL configuration (`RELAYFORGE_DATABASE_URL`, `RELAYFORGE_DB_*`) with validation.

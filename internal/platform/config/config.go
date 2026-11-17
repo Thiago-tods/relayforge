@@ -23,6 +23,11 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// ReadHeaderTimeout protects the HTTP server against slow clients.
 	ReadHeaderTimeout time.Duration
+	// SessionLifetime is the absolute lifetime of an authenticated session.
+	SessionLifetime time.Duration
+	// CookieSecure sets the Secure attribute on the session cookie. It defaults
+	// to true in production and must not be disabled there.
+	CookieSecure bool
 }
 
 const (
@@ -31,6 +36,8 @@ const (
 	defaultLogFormat         = "json"
 	defaultShutdownTimeout   = 15 * time.Second
 	defaultReadHeaderTimeout = 5 * time.Second
+	defaultSessionLifetime   = 12 * time.Hour
+	maxSessionLifetime       = 30 * 24 * time.Hour
 )
 
 // Load reads configuration from the process environment.
@@ -63,6 +70,16 @@ func LoadFrom(lookup func(string) (string, bool), defaultHTTPAddr string) (Confi
 		return Config{}, fmt.Errorf("RELAYFORGE_READ_HEADER_TIMEOUT: %w", err)
 	}
 
+	if cfg.SessionLifetime, err = duration(get("RELAYFORGE_SESSION_LIFETIME", ""), defaultSessionLifetime); err != nil {
+		return Config{}, fmt.Errorf("RELAYFORGE_SESSION_LIFETIME: %w", err)
+	}
+	cfg.CookieSecure = cfg.Env == "production"
+	if raw := get("RELAYFORGE_COOKIE_SECURE", ""); raw != "" {
+		if cfg.CookieSecure, err = strconv.ParseBool(raw); err != nil {
+			return Config{}, fmt.Errorf("RELAYFORGE_COOKIE_SECURE: invalid boolean %q", raw)
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -91,6 +108,12 @@ func (c Config) Validate() error {
 	}
 	if c.ShutdownTimeout <= 0 || c.ReadHeaderTimeout <= 0 {
 		return fmt.Errorf("timeouts must be positive")
+	}
+	if c.SessionLifetime <= 0 || c.SessionLifetime > maxSessionLifetime {
+		return fmt.Errorf("RELAYFORGE_SESSION_LIFETIME: must be positive and at most %s", maxSessionLifetime)
+	}
+	if c.Env == "production" && !c.CookieSecure {
+		return fmt.Errorf("RELAYFORGE_COOKIE_SECURE: must be true in production")
 	}
 	return nil
 }

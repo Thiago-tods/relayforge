@@ -17,6 +17,11 @@ All processes share the `internal/` packages and are built from one Go module.
 | `internal/platform`      | Configuration, HTTP server, error handling, process runtime  |
 | `internal/observability` | Structured logging (metrics and tracing later)               |
 | `internal/database`      | pgx connection pool, health check, embedded goose migrations |
+| `internal/identity`      | Email normalization, Argon2id passwords, opaque tokens, users and sessions |
+| `internal/tenancy`       | Organizations, memberships, invitations, roles and the permission policy |
+| `internal/audit`         | Append-only audit events |
+| `internal/app`           | Use cases and transaction boundaries; the authorization gate |
+| `internal/httpapi`       | `/api/v1` handlers, cookie authentication, CSRF, error rendering |
 | `internal/database/dbtest` | Test helper creating isolated databases for integration tests |
 | `cmd/migrate`            | CLI to apply (`up`) and report (`status`) migrations         |
 
@@ -37,3 +42,19 @@ affect the code are recorded in [docs/decisions](../decisions/).
 - Schema is defined by embedded SQL migrations tracked in `goose_db_version`, applied explicitly with
   `cmd/migrate`, never implicitly at API startup.
 - See ADRs 0004 to 0007 for the rationale.
+
+## Identity and tenancy layer
+
+Request flow for an organization-scoped call: `httpapi` authenticates the cookie and checks CSRF,
+`app` loads the caller's active membership in the requested organization (`404` if absent), checks the
+permission from `tenancy` (`403` if missing), then runs the operation in a transaction together with
+its audit event. Repositories in `identity`, `tenancy` and `audit` take a `database.Querier`, so the
+same code runs inside or outside a transaction.
+
+Tables: `users`, `sessions`, `organizations`, `memberships`, `organization_invitations`,
+`audit_events` (migrations 00002 to 00006). Secrets are stored only as SHA-256 hashes (session, CSRF,
+invitation tokens) or an Argon2id hash (passwords). Invariants enforced by the database: unique
+normalized email, one active OWNER per organization, valid roles and statuses, one pending invitation
+per organization and email, append-only audit events.
+
+See ADRs 0008 to 0014.

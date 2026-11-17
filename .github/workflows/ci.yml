@@ -78,7 +78,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - name: Dependency audit
+      # Blocks on vulnerabilities in dependencies that ship to users. Development-only
+      # tooling is audited separately below because advisories there can have no fix yet.
+      - name: Dependency audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Dependency audit (all dependencies, informational)
+        continue-on-error: true
         run: npm audit --audit-level=high
 
   compose:

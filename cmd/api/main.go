@@ -8,5 +8,5 @@ import (
 )
 
 func main() {
-	os.Exit(runtime.Run("api", ":8080", runtime.Options{RequireDatabase: true}))
+	os.Exit(runtime.Run("api", ":8080", runtime.Options{RequireDatabase: true, ServeAPI: true}))
 }
