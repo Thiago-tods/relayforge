@@ -21,8 +21,9 @@ RelayForge is pre-release. Only the `main` branch receives security fixes.
 ## Authentication hardening status
 
 Implemented: Argon2id password hashing, opaque revocable sessions, hardened cookies, CSRF tokens,
-generic login failures with equalized timing, tenant isolation, RBAC, one-time expiring invitations
-and append-only audit events (ADRs 0008 to 0014).
+generic login failures with equalized timing, atomic PostgreSQL-backed failed-login reservations per
+account and client address, tenant isolation, RBAC, one-time expiring invitations and append-only
+audit events (ADRs 0008 to 0014 and 0021).
 
 **Not implemented (follow-ups):**
 

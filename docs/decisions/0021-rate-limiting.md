@@ -28,7 +28,14 @@ limit of 25). Buckets are `name:sha256(identifier)`; no address or email is stor
 
 - Two ingestion buckets on purpose: unsigned traffic can only exhaust its own address's budget and
   can never starve the legitimate producer's per-endpoint budget (tested).
-- Over the limit: `429 rate_limited` with `Retry-After`. Login limits are checked **before** the
+- Over the limit: `429 rate_limited` with `Retry-After`. Login attempts reserve the account and
+  address budgets in one PostgreSQL transaction **before** password verification. The atomic upserts
+  serialize concurrent reservations, so simultaneous failures cannot all pass a stale pre-check.
+- Invalid credentials keep the reservation; a successful login releases it in the same transaction
+  that creates the session. Unexpected verification or database errors release the reservation in a
+  separate bounded cleanup transaction. If the request process terminates before cleanup, the
+  reservation can remain until the 15-minute window expires (a conservative temporary false positive).
+- Once the failed-attempt count reaches the limit, further attempts get `429` without checking the
   password, so a correct password during lockout is also refused.
 - Settings: `RELAYFORGE_INGEST_RATE_PER_ENDPOINT`, `RELAYFORGE_INGEST_RATE_PER_IP`,
   `RELAYFORGE_LOGIN_FAILURES_PER_ACCOUNT`, `RELAYFORGE_LOGIN_FAILURES_PER_IP`.
@@ -41,7 +48,8 @@ limit of 25). Buckets are `name:sha256(identifier)`; no address or email is stor
 ## Trade-offs and limitations
 
 - Fixed windows allow up to twice the limit across a boundary.
-- Every limited request costs one small database write.
+- Login attempts cost one reservation transaction and successful logins perform a decrement in the
+  session transaction. Every limited request costs one small database write.
 - **The client address is the TCP peer.** `X-Forwarded-For` is ignored because it is client
   controlled. Behind a reverse proxy every client appears as the proxy, so per-address limits become
   global; a trusted-proxy setting is future work. Do not put the API behind a shared proxy without it.
