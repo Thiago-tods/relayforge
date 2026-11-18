@@ -107,10 +107,91 @@ have fixed names and no labels: `relayforge_delivery_*`, `relayforge_outbox_*`, 
 
 ### Limitations of this phase
 
-- There is no HTTP API yet to create destinations or subscriptions. `delivery.Subscribe` and
-  `delivery.RevokeSubscription` implement the lifecycle (ADR 0026); the API and its authorization come next.
+- Destination, subscription and delivery history APIs exist (Phase 4.3, section below); there is no
+  delivery replay or manual retry endpoint.
 - Destinations on private addresses are not supported (ADR 0023).
 - Delivery is at-least-once with no ordering guarantee. Receivers must deduplicate on
   `X-RelayForge-Delivery-Id` (ADR 0022 and 0024).
 - Events older than the reconciliation lookback whose broker message was lost are not repaired automatically.
 - Secret rotation for destinations has a schema column but no operation yet.
+
+## Destination, subscription and delivery history API (Phase 4.3)
+
+All routes live under `/api/v1/organizations/{organizationId}` and use the session cookie. Every state
+changing request also needs the `X-CSRF-Token` header and `Content-Type: application/json`. Bodies are strict:
+unknown fields are rejected and bodies over the server limit return `413`. List responses use
+`{"items": [...], "total": n, "limit": n, "offset": n}` with `limit` 1 to 100 (default 20) and `offset` >= 0.
+Errors use `{"error": {"code": "...", "message": "..."}}`.
+
+### Destinations
+
+| Method and path | Purpose | Notes |
+|---|---|---|
+| `POST /destinations` | Create | Body `{"name", "url"}`. `201`. Returns `signingSecret` once (rotation is the only other response that does) |
+| `GET /destinations` | List | Optional `status=ACTIVE`, `PAUSED` or `REVOKED` |
+| `GET /destinations/{destinationId}` | Read | |
+| `PATCH /destinations/{destinationId}` | Rename and/or change URL | Body `{"name"?, "url"?}`, at least one |
+| `POST /destinations/{destinationId}/pause` | Pause | Idempotent. Paused destinations are not claimed by the worker |
+| `POST /destinations/{destinationId}/activate` | Activate | Idempotent. `409` if revoked |
+| `POST /destinations/{destinationId}/rotate-secret` | Rotate signing secret | Returns the new `signingSecret` once |
+| `DELETE /destinations/{destinationId}` | Revoke | Permanent, keeps history, cancels pending deliveries. Idempotent |
+
+A destination is `{id, organizationId, name, url, urlHasQuery, status, createdByUserId, createdAt, updatedAt, revokedAt?}`.
+`url` is shown **without its query string**. Ciphertext, key version and secret version are never returned.
+Names are 1 to 100 printable characters, unique per organization (case-insensitive) among non-revoked destinations.
+URLs must be `https` on port 443, with no credentials or fragment, and must not be an IP literal in a blocked
+range or a reserved name; the same rules apply again at connection time (ADR 0023).
+
+### Subscriptions
+
+| Method and path | Purpose | Notes |
+|---|---|---|
+| `POST /subscriptions` | Create | Body `{"endpointId", "destinationId"}`. `201`; `409 already_subscribed` for a duplicate active one |
+| `GET /subscriptions` | List | Filters `endpointId`, `destinationId`, `status=ACTIVE` or `REVOKED` |
+| `GET /subscriptions/{subscriptionId}` | Read | |
+| `DELETE /subscriptions/{subscriptionId}` | Revoke | Keeps the record; `409 subscription_revoked` if already revoked |
+
+A subscription is `{id, organizationId, endpointId, destinationId, destinationName, destinationStatus, status,
+createdByUserId, createdAt, revokedAt?}`. Event eligibility follows ADR 0026: an event is delivered through a
+subscription if it was accepted inside `[createdAt, revokedAt)`. Re-subscribing creates a new record.
+Revoked endpoints and destinations cannot be subscribed (`409`); paused ones can.
+
+### Delivery history (read-only)
+
+| Method and path | Purpose |
+|---|---|
+| `GET /deliveries` | List, newest first |
+| `GET /deliveries/{deliveryId}` | `{"delivery": {...}, "attempts": [...]}` |
+
+List filters: `destinationId`, `eventId`, `status` (`PENDING`, `IN_FLIGHT`, `SUCCEEDED`, `FAILED`,
+`CANCELLED`), `from` (inclusive) and `to` (exclusive) as RFC 3339 timestamps compared with the delivery's
+creation time; `from` must be before `to`. A delivery has `id, eventId, destinationId, destinationName,
+status, attemptCount, maxAttempts, nextAttemptAt?, lastHttpStatus?, lastErrorClass?, createdAt, updatedAt,
+completedAt?`. An attempt has `attemptNumber, startedAt, finishedAt, durationMs, outcome, httpStatus?, errorClass?`.
+Payloads, destination URLs, response bodies, raw error text and claim fields are never returned.
+
+### Error codes
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `validation_failed`, `invalid_json` | Invalid input, unknown field, bad filter or date |
+| 401 | `unauthenticated` | No valid session |
+| 403 | `forbidden`, `csrf_invalid` | Missing permission, or missing CSRF token |
+| 404 | `not_found` | Missing resource, malformed id, or a resource or organization of another tenant |
+| 409 | `destination_revoked`, `destination_name_taken`, `already_subscribed`, `subscription_revoked`, `endpoint_revoked` | Lifecycle conflicts |
+| 413, 415 | `request_too_large`, `unsupported_media_type` | Body limits |
+
+### Permissions
+
+OWNER and ADMIN can do everything. DEVELOPER can read, create, rename, re-target, pause and activate
+destinations and manage subscriptions, but cannot rotate secrets or revoke destinations. VIEWER is read-only
+(destinations, subscriptions, deliveries). See ADR 0027.
+
+### Testing this API locally
+
+The tests use the disposable PostgreSQL strategy described above; no Docker and no network are needed:
+
+```powershell
+$env:RELAYFORGE_TEST_DATABASE_URL = "postgres://USER:PASSWORD@127.0.0.1:54329/postgres?sslmode=disable"
+go test -count=1 ./internal/app/ ./internal/httpapi/ ./internal/delivery/ ./internal/database/
+```

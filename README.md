@@ -3,7 +3,7 @@
 RelayForge is a webhook infrastructure platform that receives, persists, processes, delivers,
 retries and monitors webhook events reliably.
 
-> **Status:** Phase 4.2 (reliable webhook delivery engine: signed outbound delivery, retries, NATS JetStream relay). Destination and subscription management APIs are not implemented yet. Delivery is at-least-once.
+> **Status:** Phase 4.3 (destination, subscription and delivery history APIs on top of the Phase 4.2 delivery engine). There is no web dashboard for them yet and no delivery replay. Delivery is at-least-once.
 
 ## Architecture overview
 

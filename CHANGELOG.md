@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.3: destination and subscription management API)
+
+- Destination management: create (with a signing secret shown once), list, read, rename, change URL, pause,
+  activate, rotate the secret and revoke (`DELETE`, permanent). URLs pass the SSRF-safe validation and are
+  returned without their query string.
+- Subscription management: create, list, read and revoke (`DELETE`), on top of `delivery.Subscribe` and
+  `delivery.RevokeSubscription`; ADR 0026 event-time semantics are unchanged.
+- Read-only delivery history: filtered, paginated list and a detail view with the recorded attempts.
+- New permissions in the RBAC matrix (destinations, subscriptions, deliveries) and audit events for every mutation.
+- Migration 00017: a revoked destination is immutable at the database level, destination identity and
+  `secret_version` guards, and an organization index for subscription listing.
+- ADR 0027.
+
 ### Added (Phase 4.2: reliable webhook delivery engine)
 
 - `internal/egress`: outbound HTTP client with DNS pinning, SSRF address blocking, no proxies, no redirects,

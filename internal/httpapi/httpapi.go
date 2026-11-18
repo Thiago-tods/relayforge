@@ -82,6 +82,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/organizations/{organizationID}/audit-events", a.handle(a.authed(a.listAuditEvents)))
 
 	a.registerIngestionRoutes(mux)
+	a.registerDeliveryRoutes(mux)
 
 	mux.HandleFunc("/api/", a.handle(func(http.ResponseWriter, *http.Request) error { return app.ErrNotFound }))
 	return mux
