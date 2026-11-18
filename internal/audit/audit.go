@@ -34,6 +34,15 @@ const (
 	EndpointActivated     = "ingestion_endpoint.activated"
 	EndpointRevoked       = "ingestion_endpoint.revoked"
 	EndpointSecretRotated = "ingestion_endpoint.secret_rotated"
+
+	DestinationCreated       = "destination.created"
+	DestinationUpdated       = "destination.updated"
+	DestinationPaused        = "destination.paused"
+	DestinationActivated     = "destination.activated"
+	DestinationRevoked       = "destination.revoked"
+	DestinationSecretRotated = "destination.secret_rotated"
+	SubscriptionCreated      = "subscription.created"
+	SubscriptionRevoked      = "subscription.revoked"
 )
 
 // Event is one audit record. OrganizationID, ActorUserID and ResourceID are

@@ -58,7 +58,43 @@ const (
 	PermEndpointsRevoke   Permission = "endpoints:revoke"
 	PermEventsList        Permission = "events:list"         // metadata only
 	PermEventsReadPayload Permission = "events:read_payload" // raw payload
+
+	// Destinations, subscriptions and delivery history (Phase 4.3).
+	PermDestinationsRead   Permission = "destinations:read"
+	PermDestinationsCreate Permission = "destinations:create"
+	PermDestinationsUpdate Permission = "destinations:update" // rename and change URL
+	PermDestinationsPause  Permission = "destinations:pause"  // pause and activate
+	PermDestinationsRotate Permission = "destinations:rotate_secret"
+	PermDestinationsRevoke Permission = "destinations:revoke"
+	PermSubscriptionsRead  Permission = "subscriptions:read"
+	PermSubscriptionsWrite Permission = "subscriptions:write" // create and revoke
+	PermDeliveriesRead     Permission = "deliveries:read"     // metadata and attempts, never payloads
 )
+
+// destinationPermissions are held by OWNER and ADMIN.
+var destinationPermissions = []Permission{
+	PermDestinationsRead, PermDestinationsCreate, PermDestinationsUpdate, PermDestinationsPause,
+	PermDestinationsRotate, PermDestinationsRevoke, PermSubscriptionsRead, PermSubscriptionsWrite, PermDeliveriesRead,
+}
+
+func init() {
+	for _, p := range destinationPermissions {
+		permissions[RoleOwner][p] = true
+		permissions[RoleAdmin][p] = true
+	}
+	// Like endpoints: DEVELOPER may create, change, pause and subscribe, but rotating a
+	// secret breaks every receiver verifying the old one and revocation is permanent,
+	// so those two stay with OWNER and ADMIN. VIEWER is read-only.
+	for _, p := range []Permission{
+		PermDestinationsRead, PermDestinationsCreate, PermDestinationsUpdate, PermDestinationsPause,
+		PermSubscriptionsRead, PermSubscriptionsWrite, PermDeliveriesRead,
+	} {
+		permissions[RoleDeveloper][p] = true
+	}
+	for _, p := range []Permission{PermDestinationsRead, PermSubscriptionsRead, PermDeliveriesRead} {
+		permissions[RoleViewer][p] = true
+	}
+}
 
 // permissions is the authorization matrix. PermMembersChangeRole and
 // PermMembersRemove are "limited" for ADMIN: holding the permission is only the

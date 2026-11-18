@@ -20,16 +20,20 @@ var (
 	ErrForbidden          = apperror.New(http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 	// ErrNotFound is returned both for resources that do not exist and for
 	// organizations the caller is not a member of.
-	ErrNotFound         = apperror.New(http.StatusNotFound, "not_found", "resource not found")
-	ErrMemberNotFound   = apperror.New(http.StatusNotFound, "member_not_found", "member not found")
-	ErrEmailTaken       = apperror.New(http.StatusConflict, "email_taken", "an account with this email already exists")
-	ErrSlugTaken        = apperror.New(http.StatusConflict, "slug_taken", "this organization slug is already taken")
-	ErrAlreadyMember    = apperror.New(http.StatusConflict, "already_member", "the user is already a member of this organization")
-	ErrInvitationExists = apperror.New(http.StatusConflict, "invitation_exists", "a pending invitation already exists for this email")
-	ErrSelfModification = apperror.New(http.StatusConflict, "cannot_modify_self", "you cannot change or remove your own membership")
-	ErrUseTransfer      = apperror.New(http.StatusConflict, "use_ownership_transfer", "the owner role can only be changed with an ownership transfer")
-	ErrEndpointRevoked  = apperror.New(http.StatusConflict, "endpoint_revoked", "the ingestion endpoint is revoked")
-	ErrAlreadyOwner     = apperror.New(http.StatusConflict, "already_owner", "the target member is already the owner")
+	ErrNotFound             = apperror.New(http.StatusNotFound, "not_found", "resource not found")
+	ErrMemberNotFound       = apperror.New(http.StatusNotFound, "member_not_found", "member not found")
+	ErrEmailTaken           = apperror.New(http.StatusConflict, "email_taken", "an account with this email already exists")
+	ErrSlugTaken            = apperror.New(http.StatusConflict, "slug_taken", "this organization slug is already taken")
+	ErrAlreadyMember        = apperror.New(http.StatusConflict, "already_member", "the user is already a member of this organization")
+	ErrInvitationExists     = apperror.New(http.StatusConflict, "invitation_exists", "a pending invitation already exists for this email")
+	ErrSelfModification     = apperror.New(http.StatusConflict, "cannot_modify_self", "you cannot change or remove your own membership")
+	ErrUseTransfer          = apperror.New(http.StatusConflict, "use_ownership_transfer", "the owner role can only be changed with an ownership transfer")
+	ErrEndpointRevoked      = apperror.New(http.StatusConflict, "endpoint_revoked", "the ingestion endpoint is revoked")
+	ErrDestinationRevoked   = apperror.New(http.StatusConflict, "destination_revoked", "the destination is revoked")
+	ErrDestinationNameTaken = apperror.New(http.StatusConflict, "destination_name_taken", "a destination with this name already exists")
+	ErrAlreadySubscribed    = apperror.New(http.StatusConflict, "already_subscribed", "an active subscription already exists for this endpoint and destination")
+	ErrSubscriptionRevoked  = apperror.New(http.StatusConflict, "subscription_revoked", "the subscription is already revoked")
+	ErrAlreadyOwner         = apperror.New(http.StatusConflict, "already_owner", "the target member is already the owner")
 	// ErrInvalidInvitation is returned for unknown, expired, revoked, used and
 	// wrong-recipient invitations alike. The wrapped cause tells them apart for
 	// tests and logs but is never sent to clients.

@@ -111,3 +111,14 @@ Recording after the delivery has left `IN_FLIGHT` in the same transaction is rej
 and TRUNCATE (revoke or cancel instead). These are triggers, so they apply to every role, including one
 with full table privileges. Disabling them needs table ownership or superuser rights, so the
 application's runtime role must not own these tables. Migration rollback uses `DROP TABLE` and is not blocked.
+
+## Destinations, subscriptions and delivery history (Phase 4.3)
+
+`internal/delivery` owns the persistence of destinations (`destination.go`), subscriptions (`subscription.go`,
+`subscription_read.go`) and the read model of deliveries and attempts (`history.go`). `internal/app`
+(`destinations.go`, `subscriptions.go`, `deliveries.go`) adds authorization, validation, row locking and audit,
+and `internal/httpapi/delivery_api.go` maps them to routes. The request flow is the same as for ingestion
+endpoints: the handler authenticates and checks CSRF, the service locks the organization, authorizes through
+`tenancy`, changes the row and writes the audit event in one transaction. Delivery history has no write path.
+Migration 00017 adds database guards for destinations (a revoked destination is immutable) and an index for
+subscription listing. See ADR 0027 for the rules and the permission matrix.

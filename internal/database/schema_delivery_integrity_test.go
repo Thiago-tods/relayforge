@@ -534,7 +534,7 @@ func TestDestinationsAndDeliveriesAreNeverDeletedEvenWhenUnreferenced(t *testing
 func TestRevocationAndNormalTransitionsStillWork(t *testing.T) {
 	f := newDeliveryFixture(t)
 	f.accept(t, "rename", "UPDATE destinations SET name = 'Renamed' WHERE id = $1", f.dest1)
-	f.accept(t, "rotate the secret", "UPDATE destinations SET secret_version = secret_version + 1 WHERE id = $1", f.dest1)
+	f.accept(t, "rotate the secret", "UPDATE destinations SET signing_secret_ciphertext = decode(repeat('cd', 40), 'hex'), secret_version = secret_version + 1 WHERE id = $1", f.dest1)
 	f.accept(t, "pause", "UPDATE destinations SET status = 'PAUSED' WHERE id = $1", f.dest1)
 	f.accept(t, "activate", "UPDATE destinations SET status = 'ACTIVE' WHERE id = $1", f.dest1)
 	f.accept(t, "revoke", "UPDATE destinations SET status = 'REVOKED', revoked_at = now() WHERE id = $1", f.dest1)
