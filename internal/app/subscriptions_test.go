@@ -251,8 +251,17 @@ func TestAPISubscriptionsKeepTheEventTimeSemantics(t *testing.T) {
 	var reconciled int64
 	if err := tm.env.Pool.InTx(bg, func(tx pgx.Tx) error {
 		var err error
-		reconciled, err = delivery.Reconcile(bg, tx, time.Now().UTC().Add(time.Hour), 2*time.Minute, 24*time.Hour, 100)
-		return err
+		for _, lane := range []delivery.Lane{delivery.LaneLive, delivery.LaneHistory} {
+			var res delivery.ReconcileResult
+			res, err = delivery.Reconcile(bg, tx, delivery.ReconcileParams{
+				Now: time.Now().UTC().Add(time.Hour), Lane: lane, Grace: 2 * time.Minute, LiveWindow: delivery.DefaultLiveWindow, Limit: 100,
+			})
+			if err != nil {
+				return err
+			}
+			reconciled += res.Deliveries
+		}
+		return nil
 	}); err != nil || reconciled != 0 {
 		t.Fatalf("reconcile after revocations created %d (%v), want 0: everything eligible was already fanned out", reconciled, err)
 	}

@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (Phase 4.4.3: reconciliation marker)
+
+- Reconciliation no longer scans a 48-hour window of events. Migration 00018 adds `outbox.fanned_out_at` and a
+  partial index on unmarked rows; `FanOut` and `Reconcile` set the marker in the same transaction that creates
+  the deliveries, and `Reconcile` works only from unmarked rows. A lost fan-out is now repaired however old it
+  is, including after JetStream expired its message.
+- `delivery.Reconcile` no longer takes a lookback; it takes a `pgx.Tx` and `ReconcileParams` and returns a
+  `ReconcileResult`. `relay.ConsumerConfig` drops `Lookback` and gains `LiveWindow`, per-lane batch budgets and
+  `ReconcileMaxRowFailures`.
+- Reconciliation has two lanes with independent budgets: live (younger than 24 hours) and history (older,
+  unbounded), so a large historical backlog cannot delay the repair of a recent loss.
+- A row that fails with an integrity or data error (SQLSTATE class 22 or 23) no longer blocks the rest of the
+  batch: healthy rows are reconciled, the failing row stays unmarked, is reported safely and is retried every
+  sweep. Transient errors still fail the whole sweep.
+- Historical outbox rows start unmarked and are verified in bounded batches (no bulk update in the migration).
+- New metrics: `relayforge_reconciled_events_total`, `relayforge_reconcile_row_failures_total` and the gauges
+  `relayforge_reconcile_oldest_live_unmarked_age_seconds` and
+  `relayforge_reconcile_oldest_history_unmarked_age_seconds`.
+- Tests for the event/outbox invariant, and a guard that keeps `INSERT INTO webhook_events` and
+  `INSERT INTO outbox` inside `internal/ingest/store.go`. ADR 29.
+
 ### Added (Phase 4.4: operational reliability and observability, first stages)
 
 - `X-Request-Id` on every response and one access log line per request (route pattern, status, duration),

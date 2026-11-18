@@ -1,12 +1,9 @@
 package delivery_test
 
 import (
-	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -189,18 +186,15 @@ func TestReconcileRepairsMissingDeliveriesWithoutDuplicates(t *testing.T) {
 	f.env.Exec(t, "INSERT INTO deliveries (organization_id, event_id, destination_id) VALUES ($1, $2, $3)", org, partial, d1.ID)
 	// Age every event except the fresh one past the grace period.
 	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '10 minutes' WHERE id <> $1", fresh)
+	f.env.Exec(t, "UPDATE outbox SET created_at = now() - interval '10 minutes' WHERE event_id <> $1", fresh)
 	handledBefore := f.deliveryCount(t, handled)
 
 	run := func() int64 {
-		var n int64
-		if err := f.env.Pool.InTx(bg, func(tx pgx.Tx) error {
-			var err error
-			n, err = delivery.Reconcile(bg, tx, time.Now().UTC(), 2*time.Minute, 7*24*time.Hour, 100)
-			return err
-		}); err != nil {
+		res, err := reconcileBatch(f, 100)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return n
+		return res.Deliveries
 	}
 	if n := run(); n != 3 {
 		t.Fatalf("reconcile created %d deliveries, want 3 (2 for the lost event, 1 for the partial one)", n)
@@ -213,30 +207,5 @@ func TestReconcileRepairsMissingDeliveriesWithoutDuplicates(t *testing.T) {
 	}
 	if n := run(); n != 0 {
 		t.Fatalf("a second sweep created %d deliveries, want 0", n)
-	}
-}
-
-func TestReconcileIgnoresEventsOutsideTheLookbackAndHonorsTheLimit(t *testing.T) {
-	f := newFixture(t)
-	org, user := f.owner.Org.ID, f.owner.Principal.User.ID
-	d := f.destination(t, org, user, "D")
-	f.insertSub(t, org, d.ID, time.Now().UTC(), sub{-60 * 24 * 60, nil}) // subscribed 60 days ago
-	var ids []string
-	for i := 0; i < 5; i++ {
-		ids = append(ids, f.event(t, fmt.Sprintf(`{"i":%d}`, i)))
-	}
-	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '10 minutes'")
-	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '30 days' WHERE id = $1", ids[0])
-
-	var n int64
-	if err := f.env.Pool.InTx(context.Background(), func(tx pgx.Tx) error {
-		var err error
-		n, err = delivery.Reconcile(bg, tx, time.Now().UTC(), 2*time.Minute, 7*24*time.Hour, 2)
-		return err
-	}); err != nil || n != 2 {
-		t.Fatalf("the limit of 2 must bound one sweep: %d %v", n, err)
-	}
-	if f.deliveryCount(t, ids[0]) != 0 {
-		t.Fatal("an event older than the lookback window must not be touched")
 	}
 }

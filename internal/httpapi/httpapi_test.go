@@ -295,7 +295,17 @@ func TestAuthenticationMiddlewareRejectsInvalidSessions(t *testing.T) {
 	check("empty cookie", &http.Cookie{Name: httpapi.SessionCookieName, Value: ""})
 	check("garbage cookie", &http.Cookie{Name: httpapi.SessionCookieName, Value: "garbage"})
 	check("unknown well-formed token", &http.Cookie{Name: httpapi.SessionCookieName, Value: strings.Repeat("A", 43)})
-	check("tampered token", &http.Cookie{Name: httpapi.SessionCookieName, Value: valid.Value[:42] + "A"})
+	// Change the FIRST character, which carries six full bits of the 32-byte token (the last character of a
+	// 43-character base64 encoding carries only four, and may equal the replacement). Pick a replacement that
+	// is guaranteed to differ so the token is always actually tampered with.
+	tampered := "A"
+	if valid.Value[0] == 'A' {
+		tampered = "B"
+	}
+	if len(valid.Value) != 43 || tampered == valid.Value[:1] {
+		t.Fatalf("unexpected session token shape: length %d", len(valid.Value))
+	}
+	check("tampered token", &http.Cookie{Name: httpapi.SessionCookieName, Value: tampered + valid.Value[1:]})
 
 	// Protected endpoints all refuse anonymous callers.
 	for _, ep := range [][2]string{

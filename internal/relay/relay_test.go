@@ -301,6 +301,7 @@ func TestReconciliationRepairsALostMessage(t *testing.T) {
 	f.subscribe(t)
 	ev := f.event(t) // never published: the broker "lost" it
 	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '10 minutes'")
+	f.env.Exec(t, "UPDATE outbox SET created_at = now() - interval '10 minutes'")
 	m := relay.NewMetrics(observability.NewRegistry())
 	n, err := f.consumer(t, m).Reconcile(bg)
 	if err != nil || n != 1 {
@@ -308,6 +309,64 @@ func TestReconciliationRepairsALostMessage(t *testing.T) {
 	}
 	if f.env.Count(t, "SELECT count(*) FROM deliveries WHERE event_id = $1", ev) != 1 || m.Reconciled.Value() != 1 {
 		t.Fatal("delivery was not created")
+	}
+}
+
+// TestReconciliationSweepIsBoundedAndDrainsABacklogOverSeveralSweeps is the backfill
+// guarantee: after migration 00018 every historical outbox row is unmarked, and one sweep
+// may examine at most ReconcileLimit * ReconcileMaxBatches of them.
+func TestReconciliationSweepIsBoundedAndDrainsABacklogOverSeveralSweeps(t *testing.T) {
+	f := newFixture(t)
+	f.subscribe(t)
+	var events []string
+	for i := 0; i < 7; i++ {
+		events = append(events, f.event(t))
+	}
+	// Older than the grace period, inside the (one hour old) subscription interval. Age beyond
+	// JetStream's retention is covered at the delivery level, where subscriptions can be back-dated.
+	f.env.Exec(t, "UPDATE webhook_events SET received_at = now() - interval '30 minutes'")
+	f.env.Exec(t, "UPDATE outbox SET created_at = now() - interval '30 minutes'")
+
+	cfg := relay.DefaultConsumerConfig()
+	cfg.ReconcileLimit, cfg.ReconcileLiveBatches, cfg.ReconcileHistoryBatches = 2, 2, 2
+	m := relay.NewMetrics(observability.NewRegistry())
+	c, err := relay.NewFanOutConsumer(f.env.Pool, f.cons, cfg, quiet(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sweep, want := range []int64{4, 3, 0} { // 7 rows, at most 4 per sweep
+		n, err := c.Reconcile(bg)
+		if err != nil || n != want {
+			t.Fatalf("sweep %d created %d deliveries (%v), want %d", sweep+1, n, err, want)
+		}
+	}
+	if f.env.Count(t, "SELECT count(*) FROM outbox WHERE fanned_out_at IS NULL") != 0 || f.env.Count(t, "SELECT count(*) FROM deliveries") != len(events) {
+		t.Fatal("the backlog was not drained exactly once")
+	}
+	if m.ReconciledEvents.Value() != 7 || m.Reconciled.Value() != 7 {
+		t.Fatalf("metrics: events %d, deliveries %d", m.ReconciledEvents.Value(), m.Reconciled.Value())
+	}
+}
+
+func TestConsumerConfigRejectsAnUnboundedSweep(t *testing.T) {
+	good := relay.DefaultConsumerConfig()
+	if err := good.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*relay.ConsumerConfig){
+		"no batch limit":                        func(c *relay.ConsumerConfig) { c.ReconcileLimit = 0 },
+		"huge batch":                            func(c *relay.ConsumerConfig) { c.ReconcileLimit = 1_000_000 },
+		"no live batches":                       func(c *relay.ConsumerConfig) { c.ReconcileLiveBatches = 0 },
+		"no history batches":                    func(c *relay.ConsumerConfig) { c.ReconcileHistoryBatches = 0 },
+		"live window not longer than the grace": func(c *relay.ConsumerConfig) { c.LiveWindow = c.Grace },
+		"no failure bound":                      func(c *relay.ConsumerConfig) { c.ReconcileMaxRowFailures = 0 },
+		"no grace period":                       func(c *relay.ConsumerConfig) { c.Grace = 0 },
+	} {
+		c := good
+		mutate(&c)
+		if c.Validate() == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 

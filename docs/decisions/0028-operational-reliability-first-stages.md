@@ -64,5 +64,5 @@ PostgreSQL uses the partial indexes. A process has one registry and one `/metric
 - Readiness can fail for reasons other than the database. An orchestrator that restarts on readiness will
   restart a wedged worker, which is the intent.
 - Not changed here, and recorded as follow-ups: lease times still come from the application host clock;
-  `Reconcile` still has no index on `webhook_events.received_at`; no per-destination concurrency limit,
+  the reconciliation sweep scanned a time window (replaced by a marker in ADR 29); no per-destination concurrency limit,
   no organization fairness in the claim order, and no replay of FAILED deliveries.

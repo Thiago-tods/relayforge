@@ -102,8 +102,19 @@ Configuration (all optional unless noted; durations accept `30s` or plain second
 | `RELAYFORGE_DELIVERY_REQUEST_TIMEOUT` | 30s | Whole request, including connect and TLS |
 | `RELAYFORGE_DELIVERY_SHUTDOWN_GRACE` | 10s | Wait for in-flight attempts on shutdown |
 
-Publisher and reconciliation tuning (batch 50, lease 1m, reconcile every 1m with a 2m grace, 48h lookback,
-500 per sweep) are code defaults in `internal/relay`; change them there until a real need appears.
+Publisher and reconciliation tuning (batch 50, lease 1m, reconcile every 1m with a 2m grace, 500 rows per
+batch, 10 batches per lane per sweep, a 24h live window) are code defaults in `internal/relay`; change them
+there until a real need appears. Reconciliation reads `outbox.fanned_out_at` (ADR 29): there is no lookback
+window. Two lanes, each with its own budget, keep a large historical backlog from delaying recent losses: the
+live lane (younger than 24h) and the history lane (older, unbounded). After migration 00018 every historical
+outbox row is unmarked and is verified at up to 5,000 rows per lane per minute, so a large history drains
+gradually; watch `relayforge_reconciled_events_total`.
+
+A row that fails with an integrity or data error (SQLSTATE class 22 or 23) is isolated: healthy rows still go
+through, the failing row stays unmarked, is logged (at most 10 per sweep) with its ids and an error class, counted
+in `relayforge_reconcile_row_failures_total`, and retried every sweep, so it recovers by itself once the cause
+is fixed. Alert on `relayforge_reconcile_oldest_live_unmarked_age_seconds` staying above a few minutes. Every
+other error fails the whole sweep (`relayforge_reconcile_errors_total`).
 
 Metrics (enable with `RELAYFORGE_METRICS_ENABLED=true`, unauthenticated, restrict at the network level)
 have fixed names and no labels: `relayforge_delivery_*`, `relayforge_outbox_*`, `relayforge_fanout_*`,
@@ -133,7 +144,6 @@ interval means no worker is running recovery. Alert on the ages, not on the coun
 - Destinations on private addresses are not supported (ADR 0023).
 - Delivery is at-least-once with no ordering guarantee. Receivers must deduplicate on
   `X-RelayForge-Delivery-Id` (ADR 0022 and 0024).
-- Events older than the reconciliation lookback whose broker message was lost are not repaired automatically.
 - Secret rotation for destinations has a schema column but no operation yet.
 
 ## Destination, subscription and delivery history API (Phase 4.3)
