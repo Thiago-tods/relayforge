@@ -80,8 +80,8 @@ producer --HTTPS--> POST /api/v1/ingest/{publicId}
   ingestion and ingestion that starts afterwards sees the new state. A request verified under the old
   secret that has not committed when the rotation commits is rejected (`signature_mismatch`); one
   that committed first was valid when accepted.
-- The outbox is written but nothing reads it yet. A future publisher polls
-  `outbox WHERE published_at IS NULL AND available_at <= now()` (partial index) and publishes to NATS.
+- The outbox is read by the outbox publisher (Phase 4.2, ADR 25): it leases rows with
+  `FOR UPDATE SKIP LOCKED`, publishes to JetStream and sets `published_at` after the acknowledgment.
 - Tables (migrations 00007 to 00010): `ingestion_endpoints`, `webhook_events`, `outbox`,
   `rate_limit_counters`. Composite foreign keys keep events and outbox rows in the endpoint's
   organization.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/egress"
+	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/secretbox"
 )
 
@@ -43,7 +44,7 @@ type WorkerConfig struct {
 func DefaultWorkerConfig() WorkerConfig {
 	return WorkerConfig{
 		WorkerID: "delivery-worker", Concurrency: 8, BatchSize: 8, PollInterval: time.Second,
-		RecoveryInterval: 30 * time.Second, LeaseDuration: 2 * time.Minute, ShutdownGrace: 20 * time.Second,
+		RecoveryInterval: 30 * time.Second, LeaseDuration: 2 * time.Minute, ShutdownGrace: 10 * time.Second,
 	}
 }
 
@@ -89,6 +90,9 @@ type WorkerDeps struct {
 // the delivery is retried, so receivers must deduplicate on X-RelayForge-Delivery-Id.
 type Worker struct {
 	d WorkerDeps
+	// loopBeat and maintainBeat show that the claim loop and the maintenance loop
+	// are still turning, for the readiness check.
+	loopBeat, maintainBeat *observability.Heartbeat
 }
 
 // NewWorker validates the dependencies and returns a Worker.
@@ -109,7 +113,22 @@ func NewWorker(d WorkerDeps) (*Worker, error) {
 	if d.Now == nil {
 		d.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Worker{d: d}, nil
+	return &Worker{d: d, loopBeat: observability.NewHeartbeat(), maintainBeat: observability.NewHeartbeat()}, nil
+}
+
+// Check reports whether the worker's loops are making progress. The claim loop
+// turns at least every PollInterval plus the time of one claim, and maintenance
+// every RecoveryInterval plus the time of one sweep, so the limits are generous
+// multiples of those with a floor: a wedged loop is reported, a slow database is not.
+func (w *Worker) Check(context.Context) error {
+	cfg := w.d.Config
+	if err := w.loopBeat.Check(max(10*cfg.PollInterval, 30*time.Second)); err != nil {
+		return fmt.Errorf("claim loop: %w", err)
+	}
+	if err := w.maintainBeat.Check(max(3*cfg.RecoveryInterval, 2*time.Minute)); err != nil {
+		return fmt.Errorf("maintenance loop: %w", err)
+	}
+	return nil
 }
 
 func (w *Worker) querier() (database.Querier, error) { return w.d.Pool.Querier() }
@@ -169,9 +188,10 @@ func (w *Worker) Process(ctx context.Context, c Claimed) {
 	data, err := LoadSendData(ctx, q, c.OrganizationID, c.DeliveryID)
 	startedAt := w.d.Now()
 	var (
-		result AttemptResult
-		httpMS time.Duration
-		sent   bool
+		result      AttemptResult
+		httpMS      time.Duration
+		sent        bool
+		interrupted bool
 	)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -202,11 +222,17 @@ func (w *Worker) Process(ctx context.Context, c Claimed) {
 			}
 			classified := ResultFromRequestError(class)
 			if classified.Interrupted {
+				// Shutdown cut the request short. Record it now instead of leaving the
+				// claim to expire: the delivery returns to PENDING in seconds, not after the
+				// lease and the next recovery sweep. The attempt still counts (the request may
+				// have reached the destination), which is the same price recovery charges.
 				w.d.Metrics.Interrupted.Inc()
-				log.Info("request interrupted by shutdown; the lease will be recovered")
-				return
+				log.Info("request interrupted by shutdown; the attempt is recorded as abandoned")
+				result = AttemptResult{Outcome: OutcomeAbandoned, ErrorClass: ErrorClassShutdownInterrupted}
+				interrupted = true
+			} else {
+				result = classified.Result
 			}
-			result = classified.Result
 		} else {
 			result = ResultFromResponse(resp.StatusCode, resp.RetryAfter, w.d.Now())
 		}
@@ -217,13 +243,16 @@ func (w *Worker) Process(ctx context.Context, c Claimed) {
 
 	finishedAt := w.d.Now()
 	decision := w.policyFor(c.MaxAttempts).Decide(c.Attempt, result, finishedAt, w.d.Rand)
+	if interrupted && decision.Status == StatusPending {
+		decision.NextAttemptAt = finishedAt.Add(InterruptedRetryDelay)
+	}
 	rec := AttemptRecord{
 		Number: c.Attempt, StartedAt: startedAt, FinishedAt: finishedAt,
 		Outcome: result.Outcome, HTTPStatus: result.HTTPStatus, ErrorClass: result.ErrorClass,
 	}
 
 	// Finalize with a context that survives shutdown: a result that was obtained must be stored.
-	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), FinalizeTimeout)
 	defer cancel()
 	err = w.d.Pool.InTx(fctx, func(tx pgx.Tx) error {
 		return Finish(fctx, tx, c.OrganizationID, c.DeliveryID, c.ClaimToken, rec, decision, finishedAt)
@@ -301,6 +330,18 @@ func (w *Worker) buildRequest(c Claimed, data SendData, signedAt time.Time) (egr
 }
 
 const recoveryBatch = 20
+
+const (
+	// FinalizeTimeout bounds the transaction that stores a result obtained during
+	// shutdown. It is one short transaction, so seconds are plenty; the process
+	// shutdown budget must leave room for it after ShutdownGrace.
+	FinalizeTimeout = 5 * time.Second
+	// InterruptedRetryDelay is how soon a delivery interrupted by shutdown is due again.
+	InterruptedRetryDelay = 5 * time.Second
+	// ErrorClassShutdownInterrupted labels the abandoned attempt written when shutdown
+	// interrupts a request.
+	ErrorClassShutdownInterrupted = "shutdown_interrupted"
+)
 
 // RecoverExpired finds deliveries left IN_FLIGHT by a worker that disappeared
 // and records an ABANDONED attempt for each, then schedules a retry or fails the
@@ -409,6 +450,8 @@ func (w *Worker) SampleGauges(ctx context.Context) error {
 	m.InFlight.Set(c.InFlight)
 	m.ExpiredLeases.Set(c.ExpiredLeases)
 	m.OutboxUnpublished.Set(c.OutboxUnpublished)
+	m.OldestDueAgeSeconds.Set(int64(c.OldestDueAge / time.Second))
+	m.OldestOutboxAgeSeconds.Set(int64(c.OldestOutboxAge / time.Second))
 	return nil
 }
 
@@ -418,8 +461,10 @@ func (w *Worker) SampleGauges(ctx context.Context) error {
 // cancels deliveries of revoked destinations and samples gauges.
 //
 // On shutdown Run stops claiming, gives in-flight requests ShutdownGrace to
-// finish, then interrupts the rest. Interrupted requests are not recorded as
-// failures; their leases expire and recovery records them as abandoned.
+// finish, then interrupts the rest. An interrupted request is recorded at once as
+// an ABANDONED attempt (error class shutdown_interrupted) and its delivery is due
+// again after InterruptedRetryDelay; it is not a destination failure. If even that
+// record cannot be stored, the lease expires and recovery records the attempt.
 func (w *Worker) Run(ctx context.Context) error {
 	cfg := w.d.Config
 	execCtx, cancelExec := context.WithCancel(context.WithoutCancel(ctx))
@@ -434,7 +479,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.maintain(ctx)
 	}()
 
+	// moreWork is true when the last claim filled its batch, so due work is probably
+	// waiting. Then, if every slot is busy, the loop waits for a slot to free up
+	// instead of sleeping a whole PollInterval: otherwise throughput would be capped
+	// at Concurrency deliveries per PollInterval however fast destinations answer.
+	slotFreed := make(chan struct{}, 1)
+	moreWork := false
 	for ctx.Err() == nil {
+		w.loopBeat.Beat()
 		if free := cap(sem) - len(sem); free > 0 {
 			n := min(free, cfg.BatchSize)
 			claimed, err := w.claim(ctx, n)
@@ -448,20 +500,32 @@ func (w *Worker) Run(ctx context.Context) error {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					defer func() { <-sem }()
+					defer func() {
+						<-sem
+						select {
+						case slotFreed <- struct{}{}:
+						default:
+						}
+					}()
 					w.Process(execCtx, c)
 				}()
 			}
-			if err == nil && len(claimed) == n {
-				continue // more work is probably waiting
+			moreWork = err == nil && len(claimed) == n
+			if moreWork && cap(sem)-len(sem) > 0 {
+				continue // a slot is free and more work is probably waiting
 			}
+		}
+		var wake <-chan struct{}
+		if moreWork {
+			wake = slotFreed
 		}
 		timer := time.NewTimer(cfg.PollInterval)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 		case <-timer.C:
+		case <-wake:
 		}
+		timer.Stop()
 	}
 
 	finished := make(chan struct{})
@@ -481,6 +545,7 @@ func (w *Worker) maintain(ctx context.Context) {
 	ticker := time.NewTicker(w.d.Config.RecoveryInterval)
 	defer ticker.Stop()
 	for {
+		w.maintainBeat.Beat()
 		if _, err := w.RecoverExpired(ctx); err != nil && ctx.Err() == nil {
 			w.d.Log.Error("lease recovery failed", "error_class", "database_error")
 		}

@@ -28,6 +28,21 @@ func setup(t *testing.T) (*messaging.Conn, *messaging.Consumer, context.Context)
 	return conn, cons, ctx
 }
 
+func TestCheckReflectsTheConnection(t *testing.T) {
+	conn, _, ctx := setup(t)
+	if err := conn.Check(ctx); err != nil {
+		t.Fatalf("a connected client must be ready: %v", err)
+	}
+	conn.Close()
+	if err := conn.Check(ctx); err == nil {
+		t.Fatal("a closed connection must not be ready")
+	}
+	var nilConn *messaging.Conn
+	if err := nilConn.Check(ctx); err == nil {
+		t.Fatal("a nil connection must not be ready")
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	good := messaging.DefaultConfig("nats://127.0.0.1:4222")
 	if err := good.Validate(); err != nil {

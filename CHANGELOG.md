@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.4: operational reliability and observability, first stages)
+
+- `X-Request-Id` on every response and one access log line per request (route pattern, status, duration),
+  with the same id on failed-request logs. Database error details (which can repeat an e-mail address or
+  idempotency key) no longer reach the log.
+- Outbox, event and organization identifiers on relay log lines.
+- Gauges `relayforge_delivery_oldest_due_age_seconds` and `relayforge_outbox_oldest_unpublished_age_seconds`,
+  and `relayforge_db_pool_*` connection pool gauges.
+- Readiness now covers the delivery worker loops, the outbox publisher, the fan-out consumer and the NATS
+  connection, not only PostgreSQL.
+- ADR 28.
+
+### Changed (Phase 4.4)
+
+- The delivery worker no longer sleeps a whole `PollInterval` after a full batch while all slots are busy;
+  it waits for a slot instead. Throughput was previously capped near `Concurrency` deliveries per poll interval.
+- A request interrupted by shutdown is recorded immediately as an `ABANDONED` attempt
+  (`shutdown_interrupted`) and is due again in 5 s, instead of waiting for the lease (2 min) and the next
+  recovery sweep. The attempt still counts toward `max_attempts`.
+- `RELAYFORGE_DELIVERY_SHUTDOWN_GRACE` defaults to 10 s (was 20 s) and is reduced at start-up so that the
+  grace plus the 5 s result write fits in `RELAYFORGE_SHUTDOWN_TIMEOUT`.
+- `QueueCounts` names the status in each subquery so it uses the partial indexes and no longer scans the
+  whole, ever-growing `deliveries` table every 30 s.
+- One metrics registry and one `GET /metrics` route per process, so roles can be combined in one process.
+
 ### Added (Phase 4.3: destination and subscription management API)
 
 - Destination management: create (with a signing secret shown once), list, read, rename, change URL, pause,

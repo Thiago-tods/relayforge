@@ -91,8 +91,18 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 		defer pool.Close()
 		checks["postgres"] = pool.Check
 
+		// One registry per process: every role registers its metrics here and /metrics is
+		// mounted once, so roles can be combined in one process without a duplicate route.
+		var registry *observability.Registry
+		if cfg.MetricsEnabled {
+			registry = observability.NewRegistry()
+			mounts = append(mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
+			stopGauges := startPoolGauges(ctx, registry, pool)
+			defer stopGauges()
+		}
+
 		if opts.RunDeliveryWorker {
-			stop, code := startDeliveryWorker(ctx, service, cfg, pool, log, stderr, &mounts)
+			stop, code := startDeliveryWorker(ctx, service, cfg, pool, registry, log, stderr, checks)
 			if code != 0 {
 				return code
 			}
@@ -100,7 +110,7 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 		}
 
 		if opts.RunRelay {
-			stop, code := startRelay(ctx, service, cfg, pool, log, stderr, &mounts)
+			stop, code := startRelay(ctx, service, cfg, pool, registry, log, stderr, checks)
 			if code != 0 {
 				return code
 			}
@@ -116,11 +126,6 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 			if err != nil {
 				fmt.Fprintf(stderr, "%s: invalid RELAYFORGE_ENCRYPTION_KEY\n", service)
 				return 2
-			}
-			var registry *observability.Registry
-			if cfg.MetricsEnabled {
-				registry = observability.NewRegistry()
-				mounts = append(mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
 			}
 			appCfg := app.DefaultConfig()
 			appCfg.SessionLifetime = cfg.SessionLifetime
@@ -192,11 +197,50 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 	return 0
 }
 
+// startPoolGauges samples the connection pool into gauges until stopped. The returned
+// function stops the sampler and waits for it, so the pool can be closed afterwards.
+func startPoolGauges(ctx context.Context, reg *observability.Registry, pool *database.Pool) (stop func()) {
+	acquired := reg.Gauge("relayforge_db_pool_acquired_connections", "Connections currently in use.")
+	idle := reg.Gauge("relayforge_db_pool_idle_connections", "Open connections waiting for work.")
+	total := reg.Gauge("relayforge_db_pool_total_connections", "Open connections, in use or idle.")
+	maxConns := reg.Gauge("relayforge_db_pool_max_connections", "Configured connection limit.")
+	sample := func() {
+		s := pool.Stats()
+		acquired.Set(int64(s.AcquiredConns))
+		idle.Set(int64(s.IdleConns))
+		total.Set(int64(s.TotalConns))
+		maxConns.Set(int64(s.MaxConns))
+	}
+	sample()
+	pctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-pctx.Done():
+				return
+			case <-t.C:
+				sample()
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+// effectiveShutdownGrace returns the worker's grace period, reduced so that the grace
+// plus the time to store interrupted results fits in the process shutdown timeout.
+func effectiveShutdownGrace(grace, shutdownTimeout time.Duration) time.Duration {
+	return min(grace, max(shutdownTimeout-delivery.FinalizeTimeout, 0))
+}
+
 // startDeliveryWorker builds the delivery worker and runs it in one goroutine.
 // The returned stop function cancels it and waits for it, so the caller can
 // close the database pool afterwards. A non-zero code is a startup failure.
-func startDeliveryWorker(ctx context.Context, service string, cfg config.Config, pool *database.Pool, log *slog.Logger,
-	stderr io.Writer, mounts *[]httpserver.Mount) (stop func(), code int) {
+func startDeliveryWorker(ctx context.Context, service string, cfg config.Config, pool *database.Pool, registry *observability.Registry,
+	log *slog.Logger, stderr io.Writer, checks map[string]httpserver.Check) (stop func(), code int) {
 	if len(cfg.EncryptionKey) == 0 {
 		fmt.Fprintf(stderr, "%s: RELAYFORGE_ENCRYPTION_KEY is required (32 bytes, base64)\n", service)
 		return nil, 2
@@ -206,12 +250,6 @@ func startDeliveryWorker(ctx context.Context, service string, cfg config.Config,
 		fmt.Fprintf(stderr, "%s: invalid RELAYFORGE_ENCRYPTION_KEY\n", service)
 		return nil, 2
 	}
-	var registry *observability.Registry
-	if cfg.MetricsEnabled {
-		registry = observability.NewRegistry()
-		*mounts = append(*mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
-	}
-
 	clientCfg := egress.DefaultClientConfig()
 	clientCfg.RequestTimeout = cfg.Delivery.RequestTimeout
 	client, err := egress.NewClient(clientCfg)
@@ -220,12 +258,19 @@ func startDeliveryWorker(ctx context.Context, service string, cfg config.Config,
 		return nil, 2
 	}
 	host, _ := os.Hostname()
+	// ShutdownTimeout bounds the whole shutdown, and the worker runs concurrently with
+	// the HTTP drain. Leave room for storing the results of interrupted requests.
+	grace := effectiveShutdownGrace(cfg.Delivery.ShutdownGrace, cfg.ShutdownTimeout)
+	if grace != cfg.Delivery.ShutdownGrace {
+		log.Warn("delivery shutdown grace reduced to fit the shutdown timeout",
+			"configured", cfg.Delivery.ShutdownGrace.String(), "effective", grace.String(), "shutdown_timeout", cfg.ShutdownTimeout.String())
+	}
 	worker, err := delivery.NewWorker(delivery.WorkerDeps{
 		Pool: pool, Box: box, Sender: client, Policy: delivery.DefaultRetryPolicy(), Log: log, Metrics: delivery.NewMetrics(registry),
 		Config: delivery.WorkerConfig{
 			WorkerID:    fmt.Sprintf("%s-%s-%d", service, host, os.Getpid()),
 			Concurrency: cfg.Delivery.Concurrency, BatchSize: cfg.Delivery.BatchSize, PollInterval: cfg.Delivery.PollInterval,
-			RecoveryInterval: cfg.Delivery.RecoveryInterval, LeaseDuration: cfg.Delivery.LeaseDuration, ShutdownGrace: cfg.Delivery.ShutdownGrace,
+			RecoveryInterval: cfg.Delivery.RecoveryInterval, LeaseDuration: cfg.Delivery.LeaseDuration, ShutdownGrace: grace,
 		},
 	})
 	if err != nil {
@@ -233,6 +278,7 @@ func startDeliveryWorker(ctx context.Context, service string, cfg config.Config,
 		return nil, 2
 	}
 
+	checks["delivery_worker"] = worker.Check
 	wctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -248,8 +294,8 @@ func startDeliveryWorker(ctx context.Context, service string, cfg config.Config,
 // startRelay connects to JetStream, ensures the stream and consumer exist, and runs
 // the outbox publisher and the fan-out consumer (with reconciliation). The returned
 // stop function cancels both and waits for them. A non-zero code is a startup failure.
-func startRelay(ctx context.Context, service string, cfg config.Config, pool *database.Pool, log *slog.Logger,
-	stderr io.Writer, mounts *[]httpserver.Mount) (stop func(), code int) {
+func startRelay(ctx context.Context, service string, cfg config.Config, pool *database.Pool, registry *observability.Registry,
+	log *slog.Logger, stderr io.Writer, checks map[string]httpserver.Check) (stop func(), code int) {
 	if cfg.NATS.URL == "" {
 		fmt.Fprintf(stderr, "%s: RELAYFORGE_NATS_URL is required\n", service)
 		return nil, 2
@@ -279,16 +325,14 @@ func startRelay(ctx context.Context, service string, cfg config.Config, pool *da
 		return nil, 1
 	}
 
-	var registry *observability.Registry
-	if cfg.MetricsEnabled {
-		registry = observability.NewRegistry()
-		*mounts = append(*mounts, httpserver.Mount{Pattern: "GET /metrics", Handler: registry.Handler()})
-	}
 	m := relay.NewMetrics(registry)
 	pub, err := relay.NewPublisher(pool, conn, relay.DefaultPublisherConfig(), log, m)
 	if err == nil {
 		var fan *relay.FanOutConsumer
 		if fan, err = relay.NewFanOutConsumer(pool, cons, relay.DefaultConsumerConfig(), log, m); err == nil {
+			checks["nats"] = conn.Check
+			checks["outbox_publisher"] = pub.Check
+			checks["fanout_consumer"] = fan.Check
 			rctx, cancel := context.WithCancel(ctx)
 			var wg sync.WaitGroup
 			wg.Add(2)

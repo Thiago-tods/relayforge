@@ -267,7 +267,7 @@ func loadDelivery(get func(key, def string) string, d *Delivery) error {
 		{"RELAYFORGE_DELIVERY_POLL_INTERVAL", &d.PollInterval, time.Second},
 		{"RELAYFORGE_DELIVERY_RECOVERY_INTERVAL", &d.RecoveryInterval, 30 * time.Second},
 		{"RELAYFORGE_DELIVERY_LEASE", &d.LeaseDuration, 2 * time.Minute},
-		{"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE", &d.ShutdownGrace, 20 * time.Second},
+		{"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE", &d.ShutdownGrace, 10 * time.Second},
 		{"RELAYFORGE_DELIVERY_REQUEST_TIMEOUT", &d.RequestTimeout, 30 * time.Second},
 	}
 	for _, s := range durations {

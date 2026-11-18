@@ -131,7 +131,7 @@ func TestDeliveryConfiguration(t *testing.T) {
 	cfg, err := LoadFrom(lookupFrom(nil), ":8080")
 	d := cfg.Delivery
 	if err != nil || d.Concurrency != 8 || d.BatchSize != 8 || d.PollInterval != time.Second || d.RecoveryInterval != 30*time.Second ||
-		d.LeaseDuration != 2*time.Minute || d.ShutdownGrace != 20*time.Second || d.RequestTimeout != 30*time.Second {
+		d.LeaseDuration != 2*time.Minute || d.ShutdownGrace != 10*time.Second || d.RequestTimeout != 30*time.Second {
 		t.Fatalf("defaults: %+v %v", d, err)
 	}
 	cfg, err = LoadFrom(lookupFrom(map[string]string{"RELAYFORGE_DELIVERY_CONCURRENCY": "4", "RELAYFORGE_DELIVERY_LEASE": "5m"}), ":8080")

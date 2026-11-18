@@ -94,6 +94,12 @@ type Publisher struct {
 	log  *slog.Logger
 	m    *Metrics
 	now  func() time.Time
+	beat *observability.Heartbeat
+}
+
+// Check reports whether the publish loop is making progress (see observability.Heartbeat).
+func (p *Publisher) Check(context.Context) error {
+	return p.beat.Check(max(10*p.cfg.PollInterval, 30*time.Second))
 }
 
 // NewPublisher validates its inputs.
@@ -107,7 +113,7 @@ func NewPublisher(pool *database.Pool, conn *messaging.Conn, cfg PublisherConfig
 	if m == nil {
 		m = &Metrics{}
 	}
-	return &Publisher{pool: pool, conn: conn, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Publisher{pool: pool, conn: conn, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }, beat: observability.NewHeartbeat()}, nil
 }
 
 type claimedRow struct {
@@ -161,7 +167,8 @@ func (p *Publisher) RunOnce(ctx context.Context) (int, error) {
 		dup, err := p.conn.PublishAck(ctx, r.ID, body)
 		if err != nil {
 			p.m.PublishErrors.Inc()
-			p.log.Warn("outbox publish failed", "error_class", "publish_error", "attempts", r.Attempts)
+			p.log.Warn("outbox publish failed", "error_class", "publish_error", "attempts", r.Attempts,
+				"outbox_id", r.ID, "event_id", r.EventID, "organization_id", r.OrgID)
 			p.backoff(ctx, r)
 			continue
 		}
@@ -175,7 +182,7 @@ func (p *Publisher) RunOnce(ctx context.Context) (int, error) {
 		}
 		if qerr != nil {
 			// The message is in the stream; the row will be republished after its lease and deduplicated.
-			p.log.Error("mark outbox published failed", "error_class", "database_error")
+			p.log.Error("mark outbox published failed", "error_class", "database_error", "outbox_id", r.ID, "event_id", r.EventID, "organization_id", r.OrgID)
 			continue
 		}
 		p.m.Published.Inc()
@@ -200,6 +207,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 	t := time.NewTicker(p.cfg.PollInterval)
 	defer t.Stop()
 	for {
+		p.beat.Beat()
 		n, err := p.RunOnce(ctx)
 		if err != nil && ctx.Err() == nil {
 			p.m.PublishErrors.Inc()
@@ -245,6 +253,14 @@ type FanOutConsumer struct {
 	log  *slog.Logger
 	m    *Metrics
 	now  func() time.Time
+	beat *observability.Heartbeat
+}
+
+// Check reports whether the consume-and-reconcile loop is making progress. One turn
+// is a fetch (FetchWait) plus message handling, and reconciliation runs inside the same
+// loop, so the limit leaves room for a sweep.
+func (c *FanOutConsumer) Check(context.Context) error {
+	return c.beat.Check(max(3*c.cfg.ReconcileInterval, 2*time.Minute))
 }
 
 // NewFanOutConsumer validates its inputs.
@@ -258,7 +274,7 @@ func NewFanOutConsumer(pool *database.Pool, cons *messaging.Consumer, cfg Consum
 	if m == nil {
 		m = &Metrics{}
 	}
-	return &FanOutConsumer{pool: pool, cons: cons, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &FanOutConsumer{pool: pool, cons: cons, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }, beat: observability.NewHeartbeat()}, nil
 }
 
 // RunOnce pulls one batch and processes it. It returns the number of messages handled.
@@ -275,7 +291,7 @@ func (c *FanOutConsumer) handle(ctx context.Context, m *messaging.Message) {
 	var env Envelope
 	if err := json.Unmarshal(m.Data, &env); err != nil || env.OrganizationID == "" || env.EventID == "" {
 		c.m.PoisonMessages.Inc()
-		c.log.Warn("malformed fan-out message terminated", "error_class", "poison_message")
+		c.log.Warn("malformed fan-out message terminated", "error_class", "poison_message", "delivered", m.Delivered)
 		_ = m.Term() // retrying cannot fix a malformed message
 		return
 	}
@@ -287,13 +303,15 @@ func (c *FanOutConsumer) handle(ctx context.Context, m *messaging.Message) {
 	})
 	if err != nil {
 		c.m.FanOutErrors.Inc()
-		c.log.Warn("fan-out failed; message will be redelivered", "error_class", "fanout_error", "delivered", m.Delivered)
+		c.log.Warn("fan-out failed; message will be redelivered", "error_class", "fanout_error", "delivered", m.Delivered,
+			"outbox_id", env.OutboxID, "event_id", env.EventID, "organization_id", env.OrganizationID)
 		_ = m.Nak()
 		return
 	}
 	// Acknowledge only after the transaction committed.
 	if err := m.Ack(); err != nil {
-		c.log.Warn("ack failed; message will be redelivered and fan-out is idempotent", "error_class", "ack_error")
+		c.log.Warn("ack failed; message will be redelivered and fan-out is idempotent", "error_class", "ack_error",
+			"outbox_id", env.OutboxID, "event_id", env.EventID, "organization_id", env.OrganizationID)
 		return
 	}
 	for range created {
@@ -323,6 +341,7 @@ func (c *FanOutConsumer) Reconcile(ctx context.Context) (int64, error) {
 func (c *FanOutConsumer) Run(ctx context.Context) error {
 	next := time.Now()
 	for ctx.Err() == nil {
+		c.beat.Beat()
 		if _, err := c.RunOnce(ctx); err != nil && ctx.Err() == nil {
 			c.log.Warn("fan-out fetch failed", "error_class", "fetch_error")
 			select {

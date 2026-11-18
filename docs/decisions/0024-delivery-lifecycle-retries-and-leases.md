@@ -47,10 +47,11 @@ bounds. Nothing retries forever.
 | DNS error, connect error, timeout | Retry |
 | Blocked address, invalid URL | Failed, no retry |
 | TLS error | Retry (customers often fix certificates within hours) |
-| Context cancelled by shutdown | Not recorded; the lease expires and the reaper records `ABANDONED` |
+| Context cancelled by shutdown | Recorded at once as `ABANDONED` (`shutdown_interrupted`), due again in 5 s (ADR 28); if that write fails, the lease expires and the reaper records `ABANDONED` |
 
 **Shutdown.** The worker stops claiming, waits up to `RELAYFORGE_DELIVERY_SHUTDOWN_GRACE` for in-flight
-attempts, then cancels them. The pool is closed only after the worker has returned.
+attempts, then cancels them. The pool is closed only after the worker has returned. ADR 28 changes what
+happens to a cancelled request: it is recorded immediately instead of being left to the lease.
 
 ## Consequences
 

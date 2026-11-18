@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
 )
 
@@ -58,7 +59,7 @@ func NewHandlerWith(log *slog.Logger, checks map[string]Check, mounts ...Mount) 
 		}
 		writeJSON(w, code, map[string]any{"status": status, "checks": results})
 	})
-	return recoverer(log, mux)
+	return observability.RequestLog(log, recoverer(log, mux))
 }
 
 // New creates an http.Server with conservative timeouts.
@@ -79,7 +80,7 @@ func recoverer(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Error("panic recovered", "panic", rec, "path", r.URL.Path)
+				log.Error("panic recovered", "panic", rec, "path", r.URL.Path, "request_id", observability.RequestIDFrom(r.Context()))
 				apperror.Write(w, nil)
 			}
 		}()
