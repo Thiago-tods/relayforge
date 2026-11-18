@@ -195,7 +195,7 @@ func (w *Worker) Process(ctx context.Context, c Claimed) {
 	)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		result = AttemptResult{Outcome: OutcomeBlockedByPolicy, ErrorClass: "data_missing"}
+		result = AttemptResult{Outcome: OutcomeBlockedByPolicy, ErrorClass: ErrorClassDataMissing}
 	case err != nil:
 		if ctx.Err() == nil {
 			log.Error("cannot load delivery", "error_class", "database_error")
@@ -269,6 +269,9 @@ func (w *Worker) Process(ctx context.Context, c Claimed) {
 	}
 	w.count(decision, result, data, finishedAt)
 	attrs := []any{"outcome", string(result.Outcome), "status", string(decision.Status), "reason", decision.Reason, "duration_ms", httpMS.Milliseconds()}
+	if decision.Status == StatusFailed {
+		attrs = append(attrs, "failure_reason", string(decision.FailureReason))
+	}
 	if result.HTTPStatus != 0 {
 		attrs = append(attrs, "http_status", result.HTTPStatus)
 	}
@@ -310,7 +313,7 @@ func (w *Worker) count(d Decision, r AttemptResult, data SendData, now time.Time
 	case StatusPending:
 		w.d.Metrics.RetriesScheduled.Inc()
 	case StatusFailed:
-		w.d.Metrics.Failed.Inc()
+		w.d.Metrics.countFailed(d.FailureReason)
 	}
 }
 
@@ -404,12 +407,14 @@ func (w *Worker) recoverBatch(ctx context.Context) (int, error) {
 			recovered++
 			w.d.Metrics.AbandonedAttempts.Inc()
 			w.d.Metrics.ExpiredRecovered.Inc()
+			logAttrs := []any{"delivery_id", e.DeliveryID, "organization_id", e.OrganizationID, "attempt", e.Attempt, "status", string(decision.Status)}
 			if decision.Status == StatusFailed {
-				w.d.Metrics.Failed.Inc()
+				w.d.Metrics.countFailed(decision.FailureReason)
+				logAttrs = append(logAttrs, "failure_reason", string(decision.FailureReason))
 			} else {
 				w.d.Metrics.RetriesScheduled.Inc()
 			}
-			w.d.Log.Info("expired lease recovered", "delivery_id", e.DeliveryID, "organization_id", e.OrganizationID, "attempt", e.Attempt, "status", string(decision.Status))
+			w.d.Log.Info("expired lease recovered", logAttrs...)
 		}
 		return nil
 	})

@@ -197,9 +197,43 @@ Revoked endpoints and destinations cannot be subscribed (`409`); paused ones can
 List filters: `destinationId`, `eventId`, `status` (`PENDING`, `IN_FLIGHT`, `SUCCEEDED`, `FAILED`,
 `CANCELLED`), `from` (inclusive) and `to` (exclusive) as RFC 3339 timestamps compared with the delivery's
 creation time; `from` must be before `to`. A delivery has `id, eventId, destinationId, destinationName,
-status, attemptCount, maxAttempts, nextAttemptAt?, lastHttpStatus?, lastErrorClass?, createdAt, updatedAt,
-completedAt?`. An attempt has `attemptNumber, startedAt, finishedAt, durationMs, outcome, httpStatus?, errorClass?`.
+status, attemptCount, maxAttempts, nextAttemptAt?, lastHttpStatus?, lastErrorClass?, failureReason?, createdAt,
+updatedAt, completedAt?`. An attempt has `attemptNumber, startedAt, finishedAt, durationMs, outcome, httpStatus?,
+errorClass?, terminalReason?`.
 Payloads, destination URLs, response bodies, raw error text and claim fields are never returned.
+
+#### Why a delivery failed (ADR 30)
+
+A `FAILED` delivery has a `failureReason`, and the attempt that ended it has the same value as `terminalReason`.
+Both are omitted when they do not apply: the delivery has not failed, the attempt was not the last one, or the
+delivery failed before reasons were recorded (migration 00019 does not backfill).
+
+| `failureReason` | Meaning | What to look at |
+|---|---|---|
+| `DESTINATION_REJECTED` | The destination answered with a final 4xx (not 408, 425 or 429, which retry). | The destination's handling of the request; `lastHttpStatus`. |
+| `REDIRECT_REFUSED` | The destination answered with a 3xx. Redirects are never followed. | The destination URL. |
+| `EGRESS_BLOCKED` | The egress guard refused the address or URL. | The destination URL and its DNS. |
+| `RETRIES_EXHAUSTED` | The attempts ran out while results were still retryable. | The last attempt's `outcome`, `httpStatus` and `errorClass` (a 5xx or timeout points at the destination; `secret_unavailable`, `destination_inactive` or `lease_expired` point at the platform). |
+| `INTERNAL_ERROR` | A platform fault, or a result nothing else describes. | Platform logs. |
+
+Metrics: `relayforge_delivery_failed_total` counts every failure, and one counter per reason
+(`relayforge_delivery_failed_destination_rejected_total`, `..._redirect_refused_total`, `..._egress_blocked_total`,
+`..._retries_exhausted_total`, `..._internal_error_total`) splits it. The names are fixed (there are no labels), so
+cardinality is constant. The "delivery attempt failed" and "expired lease recovered" log lines carry
+`failure_reason` for failed deliveries.
+
+**Deployment order for migration 00019.** The migration and the application binary depend on each other: the new
+binary cannot finalize deliveries against the old schema (it writes columns that do not exist yet), and the old
+binary cannot safely finalize deliveries against the new schema (the database rejects its transitions into
+`FAILED`, because it records no reason). Deploy in this order:
+
+1. Apply migration 00019 (`migrate up`).
+2. Drain or promptly replace the old application workers.
+3. Deploy the new application binary.
+
+This is a rolling-deployment compatibility limitation, not a data-loss issue: a delivery whose finalization is
+rejected stays `IN_FLIGHT`, its lease expires, and it is recovered normally once the new binary runs. Keep the
+window between steps 1 and 3 short. See ADR 0030.
 
 ### Error codes
 

@@ -100,7 +100,7 @@ func (f *deliveryFixture) finish(org, id, token string, number int, outcome stri
 
 const (
 	toSucceeded = "status = 'SUCCEEDED', lease_expires_at = NULL, claim_token = NULL, claimed_by = NULL, last_http_status = 204, completed_at = now()"
-	toFailed    = "status = 'FAILED', lease_expires_at = NULL, claim_token = NULL, claimed_by = NULL, last_http_status = 404, completed_at = now()"
+	toFailed    = "status = 'FAILED', lease_expires_at = NULL, claim_token = NULL, claimed_by = NULL, last_http_status = 404, completed_at = now(), failure_reason = 'DESTINATION_REJECTED'"
 	toPending   = "status = 'PENDING', lease_expires_at = NULL, claim_token = NULL, claimed_by = NULL, next_attempt_at = now() + interval '1 minute'"
 )
 

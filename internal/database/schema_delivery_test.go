@@ -73,6 +73,10 @@ type dv struct {
 	lease, token, by         string // SQL fragments, e.g. "now() + interval '1 minute'"
 	httpStatus               int
 	completed                string
+	// reason is a failure_reason SQL fragment. A FAILED row without one gets a valid default,
+	// unless legacy is set: a legacy row models a delivery that failed before migration 00019.
+	reason string
+	legacy bool
 }
 
 func (d dv) sql() string {
@@ -90,14 +94,18 @@ func (d dv) sql() string {
 	if max == 0 {
 		max = 8
 	}
+	reason := d.reason
+	if reason == "" && status == "FAILED" && !d.legacy {
+		reason = "'DESTINATION_REJECTED'"
+	}
 	http := "NULL"
 	if d.httpStatus != 0 {
 		http = fmt.Sprint(d.httpStatus)
 	}
 	return fmt.Sprintf("INSERT INTO deliveries (organization_id, event_id, destination_id, status, attempt_count, max_attempts, "+
-		"lease_expires_at, claim_token, claimed_by, last_http_status, completed_at) "+
-		"VALUES ($1, $2, $3, '%s', %d, %d, %s, %s, %s, %s, %s)",
-		status, d.attempts, max, nz(d.lease), nz(d.token), nz(d.by), http, nz(d.completed))
+		"lease_expires_at, claim_token, claimed_by, last_http_status, completed_at, failure_reason) "+
+		"VALUES ($1, $2, $3, '%s', %d, %d, %s, %s, %s, %s, %s, %s)",
+		status, d.attempts, max, nz(d.lease), nz(d.token), nz(d.by), http, nz(d.completed), nz(reason))
 }
 
 func (f *deliveryFixture) insertDelivery(t *testing.T, d dv) (string, error) {
@@ -365,7 +373,7 @@ func transitionAssignments(to delivery.Status, inc int) string {
 	case delivery.StatusSucceeded:
 		return "status = 'SUCCEEDED', " + clear + ", last_http_status = 200, completed_at = now()"
 	case delivery.StatusFailed:
-		return "status = 'FAILED', " + clear + ", last_http_status = 500, completed_at = now()"
+		return "status = 'FAILED', " + clear + ", last_http_status = 500, completed_at = now(), failure_reason = 'RETRIES_EXHAUSTED'"
 	default: // CANCELLED
 		return "status = 'CANCELLED', " + clear + ", completed_at = now()"
 	}

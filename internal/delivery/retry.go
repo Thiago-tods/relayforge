@@ -148,6 +148,8 @@ type Decision struct {
 	// NextAttemptAt is set only when Status is PENDING.
 	NextAttemptAt time.Time
 	Reason        string
+	// FailureReason is set exactly when Status is FAILED, and is always a valid reason.
+	FailureReason FailureReason
 }
 
 // Decide computes the next state after attempt number `attempt` (1-based) ended
@@ -160,10 +162,10 @@ func (p RetryPolicy) Decide(attempt int, res AttemptResult, now time.Time, rnd f
 		return Decision{Status: StatusSucceeded, Reason: ReasonSucceeded}
 	}
 	if !res.Retryable() {
-		return Decision{Status: StatusFailed, Reason: ReasonNonRetryable}
+		return Decision{Status: StatusFailed, Reason: ReasonNonRetryable, FailureReason: nonRetryableReason(res)}
 	}
 	if attempt >= p.MaxAttempts {
-		return Decision{Status: StatusFailed, Reason: ReasonExhausted}
+		return Decision{Status: StatusFailed, Reason: ReasonExhausted, FailureReason: FailureRetriesExhausted}
 	}
 	delay := p.Backoff(attempt, rnd)
 	if res.RetryAfter > delay {

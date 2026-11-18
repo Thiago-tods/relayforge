@@ -59,7 +59,7 @@ func appendAttempt(t testing.TB, env *apptest.Env, orgID, id string, k, total in
 		switch final {
 		case "FAILED":
 			rec.HTTPStatus = 410
-			dec = delivery.Decision{Status: delivery.StatusFailed}
+			dec = delivery.Decision{Status: delivery.StatusFailed, FailureReason: delivery.FailureDestinationRejected}
 		case "SUCCEEDED":
 			rec.Outcome, rec.HTTPStatus = delivery.OutcomeSuccess, 200
 			dec = delivery.Decision{Status: delivery.StatusSucceeded}
@@ -282,6 +282,40 @@ func TestHistoryIsAppendOnlyAtTheDatabase(t *testing.T) {
 		}
 		if _, err := q.Exec(bg, stmt, args...); err == nil {
 			t.Errorf("%s was accepted: history must be immutable", name)
+		}
+	}
+}
+
+func TestDeliveryDetailReportsTheFailureReasonOnlyOnFailedDeliveriesAndTheirTerminalAttempt(t *testing.T) {
+	tm := newTeam(t)
+	svc, org, owner := tm.env.Svc, tm.org.ID, tm.owner.Principal
+	d := tm.dest(t, "D").Destination
+
+	failed, err := svc.GetDelivery(bg, owner, org, seedDelivery(t, tm.env, tm.owner, d.ID, 3, "FAILED"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Delivery.FailureReason == nil || *failed.Delivery.FailureReason != "DESTINATION_REJECTED" {
+		t.Fatalf("failure reason: %v", failed.Delivery.FailureReason)
+	}
+	for i, a := range failed.Attempts {
+		last := i == len(failed.Attempts)-1
+		if last != (a.TerminalReason != nil) || (last && *a.TerminalReason != "DESTINATION_REJECTED") {
+			t.Fatalf("attempt %d terminal reason: %v", i+1, a.TerminalReason)
+		}
+	}
+	for _, final := range []string{"SUCCEEDED", "PENDING"} {
+		got, err := svc.GetDelivery(bg, owner, org, seedDelivery(t, tm.env, tm.owner, d.ID, 2, final))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Delivery.FailureReason != nil {
+			t.Errorf("%s delivery has failure reason %q", final, *got.Delivery.FailureReason)
+		}
+		for _, a := range got.Attempts {
+			if a.TerminalReason != nil {
+				t.Errorf("%s delivery has a terminal attempt reason %q", final, *a.TerminalReason)
+			}
 		}
 	}
 }

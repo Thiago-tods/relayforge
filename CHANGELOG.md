@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.4.4: terminal failure reasons)
+
+- A delivery that ends as `FAILED` now records why, in a closed taxonomy: `DESTINATION_REJECTED` (final 4xx),
+  `REDIRECT_REFUSED` (3xx), `EGRESS_BLOCKED` (egress policy), `RETRIES_EXHAUSTED` (attempt budget spent) and
+  `INTERNAL_ERROR` (platform fault, and the fallback). ADR 30.
+- Migration 00019 adds `deliveries.failure_reason` and `delivery_attempts.terminal_reason`, with `CHECK`
+  constraints: only a `FAILED` delivery has a reason, only a non-successful attempt has a terminal reason, and a
+  delivery that fails from now on must have one (`NOT VALID`, so existing `FAILED` rows stay NULL; nothing is
+  backfilled). Attempt history stays append-only and terminal deliveries stay immutable.
+- `RetryPolicy.Decide` returns `Decision.FailureReason`; `Finish` writes both reasons in the same transaction as the
+  status change, under the claim-token fence, and rejects a decision whose status and reason disagree.
+- `GET /deliveries` and `GET /deliveries/{id}` return `failureReason`, and the detail response returns
+  `terminalReason` on the attempt that ended the delivery. Both are omitted when absent. No route, permission or
+  role changed.
+- New counters `relayforge_delivery_failed_<reason>_total`, one per reason with fixed names (no labels);
+  `relayforge_delivery_failed_total` is unchanged. The failure log events carry `failure_reason`.
+
 ### Changed (Phase 4.4.3: reconciliation marker)
 
 - Reconciliation no longer scans a 48-hour window of events. Migration 00018 adds `outbox.fanned_out_at` and a
