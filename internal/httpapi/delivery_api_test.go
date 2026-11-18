@@ -322,7 +322,7 @@ func seedHTTPDelivery(t *testing.T, env *apptest.Env, org, userID, endpointPubli
 		dec := delivery.Decision{Status: delivery.StatusPending, NextAttemptAt: now.Add(time.Hour)}
 		if k == attempts {
 			rec = delivery.AttemptRecord{Number: k, StartedAt: now.Add(-2 * time.Second), FinishedAt: now.Add(-time.Second), Outcome: delivery.OutcomeNetworkError, ErrorClass: "connect"}
-			dec = delivery.Decision{Status: delivery.StatusFailed}
+			dec = delivery.Decision{Status: delivery.StatusFailed, FailureReason: delivery.FailureRetriesExhausted}
 		}
 		if err := env.Pool.InTx(bg, func(tx pgx.Tx) error { return delivery.Finish(bg, tx, org, id, token, rec, dec, now) }); err != nil {
 			t.Fatal(err)
@@ -389,13 +389,13 @@ func TestDeliveryHistoryAPIIsReadOnlyScopedAndSanitized(t *testing.T) {
 	}
 	// Only whitelisted, sanitized fields are present.
 	allowedDelivery := map[string]bool{"id": true, "organizationId": true, "eventId": true, "destinationId": true, "destinationName": true, "status": true,
-		"attemptCount": true, "maxAttempts": true, "nextAttemptAt": true, "lastHttpStatus": true, "lastErrorClass": true, "createdAt": true, "updatedAt": true, "completedAt": true}
+		"attemptCount": true, "maxAttempts": true, "nextAttemptAt": true, "lastHttpStatus": true, "lastErrorClass": true, "failureReason": true, "createdAt": true, "updatedAt": true, "completedAt": true}
 	for k := range det.json()["delivery"].(map[string]any) {
 		if !allowedDelivery[k] {
 			t.Errorf("unexpected delivery field %q", k)
 		}
 	}
-	allowedAttempt := map[string]bool{"attemptNumber": true, "startedAt": true, "finishedAt": true, "durationMs": true, "outcome": true, "httpStatus": true, "errorClass": true}
+	allowedAttempt := map[string]bool{"attemptNumber": true, "startedAt": true, "finishedAt": true, "durationMs": true, "outcome": true, "httpStatus": true, "errorClass": true, "terminalReason": true}
 	for _, a := range attempts {
 		for k := range a.(map[string]any) {
 			if !allowedAttempt[k] {
@@ -493,4 +493,83 @@ func TestDestinationSubscriptionAndDeliveryTenantIsolationOverHTTP(t *testing.T)
 		t.Fatal("a cross-tenant call changed the subscription")
 	}
 	_ = http.StatusOK
+}
+
+// TestDeliveryAPIExposesTheFailureReasonOnlyWhereItExists covers the response shape of the
+// terminal failure reasons (ADR 30): failureReason on a FAILED delivery, terminalReason on
+// the one attempt that ended it, both omitted (not null) everywhere else, readable by every
+// role that can read deliveries and invisible across tenants.
+func TestDeliveryAPIExposesTheFailureReasonOnlyWhereItExists(t *testing.T) {
+	s := newServer(t, false)
+	is := newIngestSetup(t, s)
+	org := "/api/v1/organizations/" + is.org
+	destID, destSecret := createDestination(t, is.c, is.org, "Target")
+	var ownerID string
+	if err := mustQuery(s, "SELECT id::text FROM users LIMIT 1", &ownerID); err != nil {
+		t.Fatal(err)
+	}
+	failed := seedHTTPDelivery(t, s.env, is.org, ownerID, is.pub, is.secret, destID, 3, time.Now().UTC().Add(-time.Hour))
+
+	// A delivery that has not failed.
+	ev, err := s.env.Send(is.pub, s.env.Signed(is.secret, []byte(`{"p":1}`), "pending-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending string
+	if err := mustQuery(s, "INSERT INTO deliveries (organization_id, event_id, destination_id) VALUES ('"+is.org+"', '"+ev.EventID+"', '"+destID+"') RETURNING id::text", &pending); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(who string, c *client) {
+		t.Helper()
+		det := c.do("GET", org+"/deliveries/"+failed, nil)
+		if det.Status != 200 {
+			t.Fatalf("%s detail: %d %s", who, det.Status, det.Body)
+		}
+		d := det.json()["delivery"].(map[string]any)
+		if d["status"] != "FAILED" || d["failureReason"] != "RETRIES_EXHAUSTED" {
+			t.Errorf("%s: delivery %v", who, d)
+		}
+		attempts := det.json()["attempts"].([]any)
+		for i, a := range attempts {
+			reason, has := a.(map[string]any)["terminalReason"]
+			switch {
+			case i < len(attempts)-1 && has:
+				t.Errorf("%s: attempt %d is not terminal but has terminalReason %v", who, i+1, reason)
+			case i == len(attempts)-1 && reason != "RETRIES_EXHAUSTED":
+				t.Errorf("%s: the terminal attempt has terminalReason %v", who, reason)
+			}
+		}
+		list := c.do("GET", org+"/deliveries?status=FAILED", nil)
+		if list.Status != 200 || list.json()["total"] != float64(1) || list.json()["items"].([]any)[0].(map[string]any)["failureReason"] != "RETRIES_EXHAUSTED" {
+			t.Errorf("%s list: %d %s", who, list.Status, list.Body)
+		}
+		for _, r := range []response{det, list} {
+			for _, banned := range []string{destSecret, "PAYLOADSECRET", "hooks.example.com", "QUERYSECRET", "claim_token", "\"failureReason\":null", "\"terminalReason\":null"} {
+				if strings.Contains(r.Body, banned) {
+					t.Errorf("%s: response contains %q", who, banned)
+				}
+			}
+		}
+	}
+	check("owner", is.c)
+	for _, role := range []string{"ADMIN", "DEVELOPER", "VIEWER"} {
+		check(role, join(t, is.c, s, is.org, strings.ToLower(role)+"@example.com", role))
+	}
+
+	// Fields that do not apply are omitted, not null.
+	r := is.c.do("GET", org+"/deliveries/"+pending, nil)
+	if r.Status != 200 || strings.Contains(r.Body, "failureReason") || strings.Contains(r.Body, "terminalReason") {
+		t.Fatalf("a delivery that has not failed must omit both fields: %d %s", r.Status, r.Body)
+	}
+
+	// Another tenant sees nothing, and learns nothing from the id.
+	intruder := s.client(t)
+	own := intruder.orgID(intruder.register("reason-intruder@example.com"))
+	if r := intruder.do("GET", "/api/v1/organizations/"+own+"/deliveries/"+failed, nil); r.Status != 404 || strings.Contains(r.Body, "RETRIES_EXHAUSTED") {
+		t.Fatalf("cross-tenant read: %d %s", r.Status, r.Body)
+	}
+	if r := intruder.do("GET", org+"/deliveries/"+failed, nil); r.Status != 404 || strings.Contains(r.Body, "RETRIES_EXHAUSTED") {
+		t.Fatalf("foreign organization path: %d %s", r.Status, r.Body)
+	}
 }

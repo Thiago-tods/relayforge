@@ -161,15 +161,23 @@ func nullText(s string) any {
 // with the claim token as fence. If the fenced update affects no row, the claim is
 // stale and ErrStaleClaim is returned; rolling back removes the attempt too.
 func Finish(ctx context.Context, tx database.Querier, orgID, deliveryID, claimToken string, rec AttemptRecord, d Decision, now time.Time) error {
+	// A failure reason belongs to a FAILED decision and to nothing else, and a FAILED
+	// decision must carry a valid one. This is checked before anything is written, so a
+	// programming error never reaches the database as a partial result.
+	if (d.Status == StatusFailed) != d.FailureReason.Valid() || (d.Status != StatusFailed && d.FailureReason != "") {
+		return fmt.Errorf("finish delivery: status %q cannot carry failure reason %q", d.Status, d.FailureReason)
+	}
 	finished := rec.FinishedAt
 	if finished.Before(rec.StartedAt) {
 		finished = rec.StartedAt
 	}
 	durationMS := int(finished.Sub(rec.StartedAt) / time.Millisecond)
+	// Only the attempt that ends the delivery gets a terminal reason.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO delivery_attempts (organization_id, delivery_id, attempt_number, started_at, finished_at, outcome, http_status, error_class, duration_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		orgID, deliveryID, rec.Number, rec.StartedAt, finished, string(rec.Outcome), nullInt(rec.HTTPStatus), nullText(rec.ErrorClass), durationMS); err != nil {
+		INSERT INTO delivery_attempts (organization_id, delivery_id, attempt_number, started_at, finished_at, outcome, http_status, error_class, duration_ms, terminal_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		orgID, deliveryID, rec.Number, rec.StartedAt, finished, string(rec.Outcome), nullInt(rec.HTTPStatus), nullText(rec.ErrorClass), durationMS,
+		nullText(string(d.FailureReason))); err != nil {
 		return fmt.Errorf("record delivery attempt: %w", err)
 	}
 
@@ -187,9 +195,10 @@ func Finish(ctx context.Context, tx database.Querier, orgID, deliveryID, claimTo
 		tag, err = tx.Exec(ctx, `
 			UPDATE deliveries
 			   SET status = $4, lease_expires_at = NULL, claim_token = NULL, claimed_by = NULL,
-			       last_http_status = $5, last_error_class = $6, completed_at = $7
+			       last_http_status = $5, last_error_class = $6, completed_at = $7, failure_reason = $8
 			 WHERE id = $1 AND organization_id = $2 AND status = 'IN_FLIGHT' AND claim_token = $3::uuid`,
-			deliveryID, orgID, claimToken, string(d.Status), nullInt(rec.HTTPStatus), nullText(rec.ErrorClass), now)
+			deliveryID, orgID, claimToken, string(d.Status), nullInt(rec.HTTPStatus), nullText(rec.ErrorClass), now,
+			nullText(string(d.FailureReason)))
 	default:
 		return fmt.Errorf("finish delivery: unsupported next status %q", d.Status)
 	}
