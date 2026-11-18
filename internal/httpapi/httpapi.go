@@ -17,6 +17,7 @@ import (
 
 	"github.com/Thiago-tods/relayforge/internal/app"
 	"github.com/Thiago-tods/relayforge/internal/ingest"
+	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
 )
 
@@ -117,7 +118,8 @@ func (a *API) fail(w http.ResponseWriter, r *http.Request, err error) {
 		apperror.Write(w, ae)
 		return
 	}
-	a.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	a.log.Error("request failed", "request_id", observability.RequestIDFrom(r.Context()), "method", r.Method,
+		"route", r.Pattern, "error", observability.SafeError(err))
 	apperror.Write(w, err)
 }
 

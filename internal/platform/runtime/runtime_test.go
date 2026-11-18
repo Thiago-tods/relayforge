@@ -334,6 +334,14 @@ func TestDeliveryWorkerRequiresTheEncryptionKeyAndShutsDownCleanly(t *testing.T)
 	if code != http.StatusOK || !strings.Contains(body, "relayforge_delivery_claimed_total") || !strings.Contains(body, "relayforge_delivery_pending") {
 		t.Fatalf("delivery metrics must be exposed: %d %s", code, body)
 	}
+	for _, want := range []string{"relayforge_delivery_oldest_due_age_seconds", "relayforge_outbox_oldest_unpublished_age_seconds", "relayforge_db_pool_max_connections"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metric %s is missing", want)
+		}
+	}
+	if code, ready := get(t, h.addr, "/readyz"); code != http.StatusOK || !strings.Contains(ready, `"delivery_worker":"ok"`) {
+		t.Fatalf("readiness must include the worker loops: %d %s", code, ready)
+	}
 	if strings.Contains(body, key) || strings.Contains(h.stdout.String()+h.stderr.String(), key) {
 		t.Fatal("the key leaked")
 	}
@@ -360,6 +368,12 @@ func TestRelayRequiresNATSAndShutsDownCleanly(t *testing.T) {
 	if code, body := get(t, h.addr, "/metrics"); code != http.StatusOK || !strings.Contains(body, "relayforge_outbox_published_total") {
 		t.Fatalf("relay metrics must be exposed: %d %s", code, body)
 	}
+	code, ready := get(t, h.addr, "/readyz")
+	for _, want := range []string{`"nats":"ok"`, `"outbox_publisher":"ok"`, `"fanout_consumer":"ok"`, `"postgres":"ok"`} {
+		if code != http.StatusOK || !strings.Contains(ready, want) {
+			t.Errorf("readiness lacks %s: %d %s", want, code, ready)
+		}
+	}
 	if code := h.stop(t); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -375,5 +389,41 @@ func TestRelayFailsFastWhenNATSIsUnreachable(t *testing.T) {
 	}
 	if strings.Contains(h.stdout.String()+h.stderr.String(), "SECRETPASS") {
 		t.Fatal("the NATS credentials leaked")
+	}
+}
+
+// TestRolesCanShareOneProcessAndOneMetricsEndpoint guards the single registry: before it,
+// each role mounted its own GET /metrics and combining roles panicked on the duplicate route.
+func TestRolesCanShareOneProcessAndOneMetricsEndpoint(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	dbCfg := migratedDatabase(t)
+	h := start(t, Options{RequireDatabase: true, ServeAPI: true, RunDeliveryWorker: true}, map[string]string{
+		"RELAYFORGE_DATABASE_URL": dbCfg.URL, "RELAYFORGE_ENCRYPTION_KEY": key, "RELAYFORGE_METRICS_ENABLED": "true",
+		"RELAYFORGE_DELIVERY_SHUTDOWN_GRACE": "100ms",
+	})
+	if h.addr == "" {
+		t.Fatalf("combined process did not start: %s", h.stderr)
+	}
+	code, body := get(t, h.addr, "/metrics")
+	if code != http.StatusOK || !strings.Contains(body, "relayforge_ingest_requests_total") || !strings.Contains(body, "relayforge_delivery_claimed_total") {
+		t.Fatalf("one endpoint must serve every role's metrics: %d %s", code, body)
+	}
+	if code := h.stop(t); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestWorkerGraceAlwaysFitsInsideTheShutdownTimeout(t *testing.T) {
+	cases := []struct{ grace, timeout, want time.Duration }{
+		{10 * time.Second, 15 * time.Second, 10 * time.Second},
+		{20 * time.Second, 15 * time.Second, 10 * time.Second},
+		{10 * time.Second, 5 * time.Second, 0},
+		{10 * time.Second, time.Second, 0},
+		{0, 15 * time.Second, 0},
+	}
+	for _, c := range cases {
+		if got := effectiveShutdownGrace(c.grace, c.timeout); got != c.want {
+			t.Errorf("grace %v with timeout %v = %v, want %v", c.grace, c.timeout, got, c.want)
+		}
 	}
 }

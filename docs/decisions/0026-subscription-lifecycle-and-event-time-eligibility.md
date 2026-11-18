@@ -64,8 +64,8 @@ A destination's own status decides whether a request is sent:
 
 ## Guarantees and limits
 
-- Every event accepted while a subscription was active is eventually fanned out as long as the
-  reconciliation lookback (48 h) has not passed. After that, nothing repairs it automatically.
+- Every event accepted while a subscription was active is eventually fanned out, however long ago it was
+  accepted: reconciliation works from the `outbox.fanned_out_at` marker, not a time window (ADR 29).
 - Boundaries use transaction **start** times, not commit times. If a subscription transaction starts
   before an event transaction but commits after it, the event-time comparison still uses the earlier
   transaction-start timestamp. The reverse ordering can likewise differ from commit order. The discrepancy

@@ -526,7 +526,7 @@ func TestTransportFailureClasses(t *testing.T) {
 	}
 }
 
-func TestShutdownInterruptionIsNotRecordedAsAFailure(t *testing.T) {
+func TestShutdownInterruptionIsRecordedAsAbandonedAndRequeuedQuickly(t *testing.T) {
 	f := newFixture(t)
 	org, user := f.owner.Org.ID, f.owner.Principal.User.ID
 	d := f.destination(t, org, user, "D")
@@ -542,21 +542,34 @@ func TestShutdownInterruptionIsNotRecordedAsAFailure(t *testing.T) {
 		t.Fatalf("the interruption must be counted as such, not as a failure or a storage error:\n%s", metricsText.String())
 	}
 
-	// The delivery is still claimed and no failure was written: the lease will expire and recovery will record it.
-	if st, attempts, token := f.state(t, id); st != "IN_FLIGHT" || attempts != 1 || token == nil {
-		t.Fatalf("an interrupted delivery must stay claimed: %s %d %v", st, attempts, token)
-	}
-	if len(f.attempts(t, id)) != 0 {
-		t.Fatal("no attempt may be recorded for an interrupted request")
-	}
-	f.env.Clock.Advance(3 * time.Minute)
-	n, err := w.RecoverExpired(bg)
-	if err != nil || n != 1 {
-		t.Fatalf("recovery: %d %v", n, err)
-	}
+	// The interruption is recorded at once: an ABANDONED attempt, the claim released, and the
+	// delivery due again in seconds. No lease expiry or recovery sweep is needed.
+	st, attempts, token := f.state(t, id)
 	a := f.attempts(t, id)
-	if st, _, _ := f.state(t, id); st != "PENDING" || len(a) != 1 || a[0].Outcome != "ABANDONED" || a[0].Number != 1 {
-		t.Fatalf("after recovery: %s %+v", st, a)
+	if st != "PENDING" || attempts != 1 || token != nil || len(a) != 1 || a[0].Outcome != "ABANDONED" ||
+		a[0].ErrorClass == nil || *a[0].ErrorClass != delivery.ErrorClassShutdownInterrupted {
+		t.Fatalf("an interrupted delivery must be abandoned and released: %s %d %v %+v", st, attempts, token, a)
+	}
+	var next time.Time
+	q, _ := f.env.Pool.Querier()
+	if err := q.QueryRow(bg, "SELECT next_attempt_at FROM deliveries WHERE id = $1", id).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	if d := next.Sub(f.env.Clock.Now()); d < delivery.InterruptedRetryDelay-time.Second || d > delivery.InterruptedRetryDelay+time.Second {
+		t.Fatalf("the interrupted delivery must be due in about %v, not %v", delivery.InterruptedRetryDelay, d)
+	}
+	// Nothing is left for the recovery sweep.
+	f.env.Clock.Advance(3 * time.Minute)
+	if n, err := w.RecoverExpired(bg); err != nil || n != 0 {
+		t.Fatalf("recovery found %d leftovers: %v", n, err)
+	}
+	// And it is delivered on the next pass once due.
+	ok := &fakeSender{}
+	if n := f.runOnce(t, f.worker(t, ok, nil)); n != 1 || ok.count() != 1 {
+		t.Fatalf("the requeued delivery was not sent again: %d %d", n, ok.count())
+	}
+	if st, attempts, _ := f.state(t, id); st != "SUCCEEDED" || attempts != 2 {
+		t.Fatalf("after the retry: %s %d", st, attempts)
 	}
 }
 
@@ -1025,9 +1038,45 @@ func TestShutdownWaitsForTheGracePeriodThenInterruptsRequests(t *testing.T) {
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("shutdown took %v with a grace period of 200ms", time.Since(start))
 	}
-	// The interrupted request was not recorded as a failure: the claim is left for recovery.
-	if st, _, _ := f.state(t, id); st != "IN_FLIGHT" || len(f.attempts(t, id)) != 0 {
+	// The interrupted request was recorded as abandoned and the delivery released for a retry.
+	if st, _, _ := f.state(t, id); st != "PENDING" || len(f.attempts(t, id)) != 1 {
 		t.Fatalf("interrupted delivery state %s, attempts %d", st, len(f.attempts(t, id)))
+	}
+}
+
+// TestRunIsNotCappedByThePollInterval guards against a loop that sleeps a whole
+// PollInterval after every full batch: with a 2 s interval and 4 slots, 40 fast
+// deliveries would need about 20 s instead of well under one second.
+func TestRunIsNotCappedByThePollInterval(t *testing.T) {
+	f := newFixture(t)
+	org, user := f.owner.Org.ID, f.owner.Principal.User.ID
+	d := f.destination(t, org, user, "D")
+	const total = 40
+	for i := 0; i < total; i++ {
+		f.pending(t, org, f.event(t, fmt.Sprintf(`{"i":%d}`, i)), d.ID, 8)
+	}
+	s := &fakeSender{respond: func(egress.Request, int) (egress.Response, error) {
+		time.Sleep(10 * time.Millisecond)
+		return egress.Response{StatusCode: 200}, nil
+	}}
+	w := f.worker(t, s, func(dd *delivery.WorkerDeps) { dd.Config.PollInterval = 2 * time.Second })
+	ctx, cancel := context.WithCancel(bg)
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	start := time.Now()
+	for f.env.Count(t, "SELECT count(*) FROM deliveries WHERE status = 'SUCCEEDED'") < total {
+		if time.Since(start) > 6*time.Second {
+			cancel()
+			<-done
+			t.Fatalf("only %d of %d deliveries finished in %v: the loop waits a whole poll interval between batches",
+				f.env.Count(t, "SELECT count(*) FROM deliveries WHERE status = 'SUCCEEDED'"), total, time.Since(start))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if s.maxSeen.Load() > 4 {
+		t.Fatalf("concurrency bound exceeded: %d", s.maxSeen.Load())
 	}
 }
 

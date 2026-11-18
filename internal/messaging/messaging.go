@@ -108,6 +108,15 @@ func Connect(cfg Config, name string) (*Conn, error) {
 	return &Conn{nc: nc, js: js, cfg: cfg}, nil
 }
 
+// Check reports whether the connection to the server is currently up. The client
+// reconnects on its own, so a failing check means "not ready right now", not "lost".
+func (c *Conn) Check(context.Context) error {
+	if c == nil || c.nc == nil || c.nc.Status() != nats.CONNECTED {
+		return errors.New("NATS connection is down")
+	}
+	return nil
+}
+
 // Close drains and closes the connection.
 func (c *Conn) Close() {
 	if c != nil && c.nc != nil {

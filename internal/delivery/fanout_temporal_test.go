@@ -54,17 +54,14 @@ func (f *fixture) eventAccepted(t *testing.T, payload string, anchor time.Time) 
 	t.Helper()
 	id := f.event(t, payload)
 	f.env.Exec(t, "UPDATE webhook_events SET received_at = $2 WHERE id = $1", id, anchor)
+	// outbox.created_at is the same instant as received_at (one ingestion transaction).
+	f.env.Exec(t, "UPDATE outbox SET created_at = $2 WHERE event_id = $1", id, anchor)
 	return id
 }
 
 func reconcileOnce(f *fixture) (int64, error) {
-	var n int64
-	err := f.env.Pool.InTx(bg, func(tx pgx.Tx) error {
-		var err error
-		n, err = delivery.Reconcile(bg, tx, time.Now().UTC(), 2*time.Minute, 7*24*time.Hour, 100)
-		return err
-	})
-	return n, err
+	res, err := reconcileBatch(f, 100)
+	return res.Deliveries, err
 }
 
 var temporalScenarios = []struct {

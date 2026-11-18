@@ -261,20 +261,39 @@ type Counts struct {
 	InFlight          int64
 	ExpiredLeases     int64
 	OutboxUnpublished int64
+	// OldestDueAge is how long the longest-waiting due delivery has been due, zero
+	// when nothing is due. It is the signal that work is stuck or the fleet is too small.
+	OldestDueAge time.Duration
+	// OldestOutboxAge is the age of the oldest unpublished outbox record, zero when none.
+	OldestOutboxAge time.Duration
 }
 
-// QueueCounts returns the counts used by the operational gauges.
+// QueueCounts returns the counts and ages used by the operational gauges.
+//
+// Every subquery names the status it counts, so PostgreSQL can use the partial
+// indexes deliveries_due_idx (PENDING), deliveries_lease_idx (IN_FLIGHT) and
+// outbox_unpublished_idx. Cost therefore follows the size of the live queue, not
+// of the delivery history, which is never deleted and only grows.
 func QueueCounts(ctx context.Context, q database.Querier, now time.Time) (Counts, error) {
 	var c Counts
+	var oldestDue, oldestOutbox *time.Time
 	err := q.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE status = 'PENDING'),
-		       count(*) FILTER (WHERE status = 'PENDING' AND next_attempt_at <= $1),
-		       count(*) FILTER (WHERE status = 'IN_FLIGHT'),
-		       count(*) FILTER (WHERE status = 'IN_FLIGHT' AND lease_expires_at <= $1),
-		       (SELECT count(*) FROM outbox WHERE published_at IS NULL)
-		  FROM deliveries`, now).Scan(&c.Pending, &c.DuePending, &c.InFlight, &c.ExpiredLeases, &c.OutboxUnpublished)
+		SELECT (SELECT count(*) FROM deliveries WHERE status = 'PENDING'),
+		       (SELECT count(*) FROM deliveries WHERE status = 'PENDING' AND next_attempt_at <= $1),
+		       (SELECT count(*) FROM deliveries WHERE status = 'IN_FLIGHT'),
+		       (SELECT count(*) FROM deliveries WHERE status = 'IN_FLIGHT' AND lease_expires_at <= $1),
+		       (SELECT count(*) FROM outbox WHERE published_at IS NULL),
+		       (SELECT min(next_attempt_at) FROM deliveries WHERE status = 'PENDING' AND next_attempt_at <= $1),
+		       (SELECT min(created_at) FROM outbox WHERE published_at IS NULL)`, now).
+		Scan(&c.Pending, &c.DuePending, &c.InFlight, &c.ExpiredLeases, &c.OutboxUnpublished, &oldestDue, &oldestOutbox)
 	if err != nil {
 		return Counts{}, fmt.Errorf("count delivery queue: %w", err)
+	}
+	if oldestDue != nil {
+		c.OldestDueAge = max(now.Sub(*oldestDue), 0)
+	}
+	if oldestOutbox != nil {
+		c.OldestOutboxAge = max(now.Sub(*oldestOutbox), 0)
 	}
 	return c, nil
 }

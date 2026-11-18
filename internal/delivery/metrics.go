@@ -28,6 +28,10 @@ type Metrics struct {
 	InFlight          *observability.Gauge
 	ExpiredLeases     *observability.Gauge
 	OutboxUnpublished *observability.Gauge
+	// Ages, in whole seconds, are the stuck-work signals: counts alone cannot tell a
+	// healthy backlog from a stalled one.
+	OldestDueAgeSeconds    *observability.Gauge
+	OldestOutboxAgeSeconds *observability.Gauge
 }
 
 // NewMetrics registers the delivery metrics. reg may be nil.
@@ -54,5 +58,8 @@ func NewMetrics(reg *observability.Registry) *Metrics {
 		InFlight:          reg.Gauge("relayforge_delivery_in_flight", "Deliveries currently claimed by a worker."),
 		ExpiredLeases:     reg.Gauge("relayforge_delivery_expired_leases", "In-flight deliveries whose lease has expired and awaits recovery."),
 		OutboxUnpublished: reg.Gauge("relayforge_outbox_unpublished", "Outbox records not yet published."),
+
+		OldestDueAgeSeconds:    reg.Gauge("relayforge_delivery_oldest_due_age_seconds", "Seconds the longest-waiting due delivery has been due (0 when none)."),
+		OldestOutboxAgeSeconds: reg.Gauge("relayforge_outbox_oldest_unpublished_age_seconds", "Age in seconds of the oldest unpublished outbox record (0 when none)."),
 	}
 }

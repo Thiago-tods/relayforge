@@ -44,21 +44,35 @@ type Metrics struct {
 	FanOutErrors     *observability.Counter
 	PoisonMessages   *observability.Counter
 	Reconciled       *observability.Counter
+	ReconciledEvents *observability.Counter
 	ReconcileErrors  *observability.Counter
+	// ReconcileRowFailures counts outbox rows reconciliation could not process (they stay
+	// unmarked and are retried every sweep); ReconcileErrors counts whole sweeps that failed.
+	ReconcileRowFailures *observability.Counter
+	// OldestLiveUnmarkedAge and OldestHistoryUnmarkedAge are the age, in seconds, of the
+	// oldest unmarked row past the grace period in each lane (0 when the lane is empty).
+	OldestLiveUnmarkedAge    *observability.Gauge
+	OldestHistoryUnmarkedAge *observability.Gauge
 }
 
 // NewMetrics registers the relay metrics. reg may be nil.
 func NewMetrics(reg *observability.Registry) *Metrics {
 	return &Metrics{
-		Published:        reg.Counter("relayforge_outbox_published_total", "Outbox records acknowledged by JetStream."),
-		PublishDuplicate: reg.Counter("relayforge_outbox_publish_duplicates_total", "Publishes JetStream recognised as duplicates."),
-		PublishErrors:    reg.Counter("relayforge_outbox_publish_errors_total", "Failed publishes; the record is retried later."),
-		FanOutMessages:   reg.Counter("relayforge_fanout_messages_total", "Messages processed by the fan-out consumer."),
-		FanOutCreated:    reg.Counter("relayforge_fanout_deliveries_created_total", "Deliveries created by fan-out."),
-		FanOutErrors:     reg.Counter("relayforge_fanout_errors_total", "Fan-out failures; the message is redelivered."),
-		PoisonMessages:   reg.Counter("relayforge_fanout_poison_messages_total", "Malformed messages terminated without retry."),
-		Reconciled:       reg.Counter("relayforge_reconciled_deliveries_total", "Deliveries created by the reconciliation sweep."),
-		ReconcileErrors:  reg.Counter("relayforge_reconcile_errors_total", "Failed reconciliation sweeps."),
+		Published:            reg.Counter("relayforge_outbox_published_total", "Outbox records acknowledged by JetStream."),
+		PublishDuplicate:     reg.Counter("relayforge_outbox_publish_duplicates_total", "Publishes JetStream recognised as duplicates."),
+		PublishErrors:        reg.Counter("relayforge_outbox_publish_errors_total", "Failed publishes; the record is retried later."),
+		FanOutMessages:       reg.Counter("relayforge_fanout_messages_total", "Messages processed by the fan-out consumer."),
+		FanOutCreated:        reg.Counter("relayforge_fanout_deliveries_created_total", "Deliveries created by fan-out."),
+		FanOutErrors:         reg.Counter("relayforge_fanout_errors_total", "Fan-out failures; the message is redelivered."),
+		PoisonMessages:       reg.Counter("relayforge_fanout_poison_messages_total", "Malformed messages terminated without retry."),
+		Reconciled:           reg.Counter("relayforge_reconciled_deliveries_total", "Deliveries created by the reconciliation sweep."),
+		ReconciledEvents:     reg.Counter("relayforge_reconciled_events_total", "Outbox rows the reconciliation sweep examined and marked as fanned out (includes backfill of rows that needed nothing)."),
+		ReconcileRowFailures: reg.Counter("relayforge_reconcile_row_failures_total", "Outbox rows reconciliation could not process (integrity or data error); they stay unmarked and are retried."),
+		OldestLiveUnmarkedAge: reg.Gauge("relayforge_reconcile_oldest_live_unmarked_age_seconds",
+			"Age of the oldest unmarked outbox row younger than the live window and past the grace period (0 when none). Growing means reconciliation is behind or a row is failing."),
+		OldestHistoryUnmarkedAge: reg.Gauge("relayforge_reconcile_oldest_history_unmarked_age_seconds",
+			"Age of the oldest unmarked outbox row older than the live window (0 when none); large while the backfill after migration 00018 drains."),
+		ReconcileErrors: reg.Counter("relayforge_reconcile_errors_total", "Failed reconciliation sweeps."),
 	}
 }
 
@@ -94,6 +108,12 @@ type Publisher struct {
 	log  *slog.Logger
 	m    *Metrics
 	now  func() time.Time
+	beat *observability.Heartbeat
+}
+
+// Check reports whether the publish loop is making progress (see observability.Heartbeat).
+func (p *Publisher) Check(context.Context) error {
+	return p.beat.Check(max(10*p.cfg.PollInterval, 30*time.Second))
 }
 
 // NewPublisher validates its inputs.
@@ -107,7 +127,7 @@ func NewPublisher(pool *database.Pool, conn *messaging.Conn, cfg PublisherConfig
 	if m == nil {
 		m = &Metrics{}
 	}
-	return &Publisher{pool: pool, conn: conn, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Publisher{pool: pool, conn: conn, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }, beat: observability.NewHeartbeat()}, nil
 }
 
 type claimedRow struct {
@@ -161,7 +181,8 @@ func (p *Publisher) RunOnce(ctx context.Context) (int, error) {
 		dup, err := p.conn.PublishAck(ctx, r.ID, body)
 		if err != nil {
 			p.m.PublishErrors.Inc()
-			p.log.Warn("outbox publish failed", "error_class", "publish_error", "attempts", r.Attempts)
+			p.log.Warn("outbox publish failed", "error_class", "publish_error", "attempts", r.Attempts,
+				"outbox_id", r.ID, "event_id", r.EventID, "organization_id", r.OrgID)
 			p.backoff(ctx, r)
 			continue
 		}
@@ -175,7 +196,7 @@ func (p *Publisher) RunOnce(ctx context.Context) (int, error) {
 		}
 		if qerr != nil {
 			// The message is in the stream; the row will be republished after its lease and deduplicated.
-			p.log.Error("mark outbox published failed", "error_class", "database_error")
+			p.log.Error("mark outbox published failed", "error_class", "database_error", "outbox_id", r.ID, "event_id", r.EventID, "organization_id", r.OrgID)
 			continue
 		}
 		p.m.Published.Inc()
@@ -200,6 +221,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 	t := time.NewTicker(p.cfg.PollInterval)
 	defer t.Stop()
 	for {
+		p.beat.Beat()
 		n, err := p.RunOnce(ctx)
 		if err != nil && ctx.Err() == nil {
 			p.m.PublishErrors.Inc()
@@ -219,19 +241,41 @@ func (p *Publisher) Run(ctx context.Context) error {
 // ConsumerConfig bounds the fan-out consumer and the reconciliation sweep.
 type ConsumerConfig struct {
 	ReconcileInterval time.Duration
-	Grace             time.Duration
-	Lookback          time.Duration
-	ReconcileLimit    int
+	// Grace leaves recently accepted events to the normal path.
+	Grace time.Duration
+	// LiveWindow separates the two reconciliation lanes: rows younger than it are the live
+	// lane, older rows the history lane (ADR 29). It must exceed Grace.
+	LiveWindow time.Duration
+	// ReconcileLimit is how many outbox rows one batch examines.
+	ReconcileLimit int
+	// ReconcileLiveBatches and ReconcileHistoryBatches bound how many full batches one sweep
+	// runs back to back in each lane. The budgets are independent, so neither lane can starve
+	// the other, and together they cap the work per interval: at most ReconcileLimit *
+	// (live + history batches) rows. That cap is also what keeps the one-time verification of
+	// historical rows after migration 00018 gradual.
+	ReconcileLiveBatches    int
+	ReconcileHistoryBatches int
+	// ReconcileMaxRowFailures stops a sweep once this many rows failed in it, so a systemic
+	// fault cannot turn a sweep into an unbounded series of single-row retries.
+	ReconcileMaxRowFailures int
 }
+
+// maxLoggedRowFailures bounds the log lines one sweep writes about failed rows.
+const maxLoggedRowFailures = 10
 
 // DefaultConsumerConfig returns the documented defaults.
 func DefaultConsumerConfig() ConsumerConfig {
-	return ConsumerConfig{ReconcileInterval: time.Minute, Grace: 2 * time.Minute, Lookback: 48 * time.Hour, ReconcileLimit: 500}
+	return ConsumerConfig{
+		ReconcileInterval: time.Minute, Grace: 2 * time.Minute, LiveWindow: delivery.DefaultLiveWindow,
+		ReconcileLimit: 500, ReconcileLiveBatches: 10, ReconcileHistoryBatches: 10, ReconcileMaxRowFailures: 100,
+	}
 }
 
 // Validate rejects unusable settings.
 func (c ConsumerConfig) Validate() error {
-	if c.ReconcileInterval <= 0 || c.Grace <= 0 || c.Lookback <= c.Grace || c.ReconcileLimit < 1 {
+	if c.ReconcileInterval <= 0 || c.Grace <= 0 || c.LiveWindow <= c.Grace || c.ReconcileLimit < 1 || c.ReconcileLimit > 5000 ||
+		c.ReconcileLiveBatches < 1 || c.ReconcileHistoryBatches < 1 ||
+		c.ReconcileMaxRowFailures < 1 || c.ReconcileMaxRowFailures > delivery.MaxReconcileSkip {
 		return errors.New("invalid fan-out consumer configuration")
 	}
 	return nil
@@ -245,6 +289,14 @@ type FanOutConsumer struct {
 	log  *slog.Logger
 	m    *Metrics
 	now  func() time.Time
+	beat *observability.Heartbeat
+}
+
+// Check reports whether the consume-and-reconcile loop is making progress. One turn
+// is a fetch (FetchWait) plus message handling, and reconciliation runs inside the same
+// loop, so the limit leaves room for a sweep.
+func (c *FanOutConsumer) Check(context.Context) error {
+	return c.beat.Check(max(3*c.cfg.ReconcileInterval, 2*time.Minute))
 }
 
 // NewFanOutConsumer validates its inputs.
@@ -258,7 +310,7 @@ func NewFanOutConsumer(pool *database.Pool, cons *messaging.Consumer, cfg Consum
 	if m == nil {
 		m = &Metrics{}
 	}
-	return &FanOutConsumer{pool: pool, cons: cons, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &FanOutConsumer{pool: pool, cons: cons, cfg: cfg, log: log, m: m, now: func() time.Time { return time.Now().UTC() }, beat: observability.NewHeartbeat()}, nil
 }
 
 // RunOnce pulls one batch and processes it. It returns the number of messages handled.
@@ -275,7 +327,7 @@ func (c *FanOutConsumer) handle(ctx context.Context, m *messaging.Message) {
 	var env Envelope
 	if err := json.Unmarshal(m.Data, &env); err != nil || env.OrganizationID == "" || env.EventID == "" {
 		c.m.PoisonMessages.Inc()
-		c.log.Warn("malformed fan-out message terminated", "error_class", "poison_message")
+		c.log.Warn("malformed fan-out message terminated", "error_class", "poison_message", "delivered", m.Delivered)
 		_ = m.Term() // retrying cannot fix a malformed message
 		return
 	}
@@ -287,13 +339,15 @@ func (c *FanOutConsumer) handle(ctx context.Context, m *messaging.Message) {
 	})
 	if err != nil {
 		c.m.FanOutErrors.Inc()
-		c.log.Warn("fan-out failed; message will be redelivered", "error_class", "fanout_error", "delivered", m.Delivered)
+		c.log.Warn("fan-out failed; message will be redelivered", "error_class", "fanout_error", "delivered", m.Delivered,
+			"outbox_id", env.OutboxID, "event_id", env.EventID, "organization_id", env.OrganizationID)
 		_ = m.Nak()
 		return
 	}
 	// Acknowledge only after the transaction committed.
 	if err := m.Ack(); err != nil {
-		c.log.Warn("ack failed; message will be redelivered and fan-out is idempotent", "error_class", "ack_error")
+		c.log.Warn("ack failed; message will be redelivered and fan-out is idempotent", "error_class", "ack_error",
+			"outbox_id", env.OutboxID, "event_id", env.EventID, "organization_id", env.OrganizationID)
 		return
 	}
 	for range created {
@@ -301,28 +355,90 @@ func (c *FanOutConsumer) handle(ctx context.Context, m *messaging.Message) {
 	}
 }
 
-// Reconcile runs one reconciliation sweep.
+// Reconcile runs one reconciliation sweep: the live lane, then the history lane, each with
+// its own batch budget. A batch is one short transaction. A lane stops when a batch comes
+// back short (nothing left), when its budget is spent, or when too many rows failed in this
+// sweep. It returns how many deliveries it created.
+//
+// An integrity or data error on one row is isolated by delivery.Reconcile: the row is
+// reported here, counted and logged (bounded), left unmarked, and skipped for the rest of
+// this sweep; the next sweep tries it again, so it recovers by itself once the cause is
+// fixed. Any other error (connection loss, deadlock, timeout, cancellation) fails the whole
+// sweep and is returned.
 func (c *FanOutConsumer) Reconcile(ctx context.Context) (int64, error) {
-	var n int64
-	err := c.pool.InTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		n, err = delivery.Reconcile(ctx, tx, c.now(), c.cfg.Grace, c.cfg.Lookback, c.cfg.ReconcileLimit)
-		return err
-	})
-	if err != nil {
-		c.m.ReconcileErrors.Inc()
-		return 0, err
+	var total int64
+	var skip []string
+	failures, logged := 0, 0
+	for _, lane := range []struct {
+		name    delivery.Lane
+		batches int
+	}{{delivery.LaneLive, c.cfg.ReconcileLiveBatches}, {delivery.LaneHistory, c.cfg.ReconcileHistoryBatches}} {
+		for range lane.batches {
+			var res delivery.ReconcileResult
+			err := c.pool.InTx(ctx, func(tx pgx.Tx) error {
+				var err error
+				res, err = delivery.Reconcile(ctx, tx, delivery.ReconcileParams{
+					Now: c.now(), Lane: lane.name, Grace: c.cfg.Grace, LiveWindow: c.cfg.LiveWindow,
+					Limit: c.cfg.ReconcileLimit, Skip: skip,
+				})
+				return err
+			})
+			if err != nil {
+				c.m.ReconcileErrors.Inc()
+				return total, err
+			}
+			for range res.Events {
+				c.m.ReconciledEvents.Inc()
+			}
+			for range res.Deliveries {
+				c.m.Reconciled.Inc()
+			}
+			total += res.Deliveries
+			for _, f := range res.Failed {
+				c.m.ReconcileRowFailures.Inc()
+				skip = append(skip, f.OutboxID)
+				failures++
+				if logged < maxLoggedRowFailures {
+					logged++
+					c.log.Warn("reconciliation could not process an outbox row; it stays unmarked and will be retried",
+						"error_class", f.Class, "lane", string(lane.name), "outbox_id", f.OutboxID, "event_id", f.EventID, "organization_id", f.OrganizationID)
+				}
+			}
+			if res.Examined < int64(c.cfg.ReconcileLimit) || failures >= c.cfg.ReconcileMaxRowFailures {
+				break
+			}
+		}
 	}
-	for range n {
-		c.m.Reconciled.Inc()
+	if failures > logged {
+		c.log.Warn("more reconciliation row failures than were logged", "failures", failures, "logged", logged)
 	}
-	return n, nil
+	c.sampleAges(ctx)
+	return total, nil
+}
+
+// sampleAges refreshes the oldest-unmarked-row gauges. A failure here is only logged: the
+// gauges are diagnostics and must not fail a sweep.
+func (c *FanOutConsumer) sampleAges(ctx context.Context) {
+	q, err := c.pool.Querier()
+	if err == nil {
+		var live, history time.Duration
+		live, history, err = delivery.OldestUnmarkedAges(ctx, q, c.now(), c.cfg.Grace, c.cfg.LiveWindow)
+		if err == nil {
+			c.m.OldestLiveUnmarkedAge.Set(int64(live / time.Second))
+			c.m.OldestHistoryUnmarkedAge.Set(int64(history / time.Second))
+			return
+		}
+	}
+	if ctx.Err() == nil {
+		c.log.Warn("sampling reconciliation ages failed", "error_class", "database_error")
+	}
 }
 
 // Run consumes and reconciles until ctx is cancelled.
 func (c *FanOutConsumer) Run(ctx context.Context) error {
 	next := time.Now()
 	for ctx.Err() == nil {
+		c.beat.Beat()
 		if _, err := c.RunOnce(ctx); err != nil && ctx.Err() == nil {
 			c.log.Warn("fan-out fetch failed", "error_class", "fetch_error")
 			select {

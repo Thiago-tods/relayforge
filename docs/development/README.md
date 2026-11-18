@@ -22,7 +22,23 @@ Add `-v` to `down` only if you want to delete the persistent data volumes.
 
 ## Health endpoints
 
-Every Go process serves `GET /healthz` and `GET /readyz` on its HTTP address.
+Every Go process serves `GET /healthz` (liveness) and `GET /readyz` (readiness) on its HTTP address.
+Readiness lists one check per dependency or loop, and answers 503 when any of them fails:
+
+| Process | Checks |
+|---|---|
+| all with a database | `postgres` |
+| `delivery-worker` | `delivery_worker`: the claim loop and the maintenance loop are still turning |
+| `outbox-publisher` | `nats`, `outbox_publisher`, `fanout_consumer` |
+
+A loop that stops turning (for example a claim query that never returns) makes the process not ready even
+though the database answers, so an orchestrator can restart it.
+
+Every HTTP response carries an `X-Request-Id` header. A caller may send its own (8 to 64 characters from
+`A-Za-z0-9._-`); anything else is replaced. Each request writes one access line with the same
+`request_id`, the route **pattern** (never the raw path or query string), method, status and duration.
+Probes and scrapes log at debug level. Failed requests log the same `request_id`, so a client report
+can be tied to the server log.
 
 ## Writing migrations
 
@@ -84,14 +100,30 @@ Configuration (all optional unless noted; durations accept `30s` or plain second
 | `RELAYFORGE_DELIVERY_RECOVERY_INTERVAL` | 30s | Expired lease reaper |
 | `RELAYFORGE_DELIVERY_LEASE` | 2m | At least 30s and longer than the request timeout |
 | `RELAYFORGE_DELIVERY_REQUEST_TIMEOUT` | 30s | Whole request, including connect and TLS |
-| `RELAYFORGE_DELIVERY_SHUTDOWN_GRACE` | 20s | Wait for in-flight attempts on shutdown |
+| `RELAYFORGE_DELIVERY_SHUTDOWN_GRACE` | 10s | Wait for in-flight attempts on shutdown |
 
-Publisher and reconciliation tuning (batch 50, lease 1m, reconcile every 1m with a 2m grace, 48h lookback,
-500 per sweep) are code defaults in `internal/relay`; change them there until a real need appears.
+Publisher and reconciliation tuning (batch 50, lease 1m, reconcile every 1m with a 2m grace, 500 rows per
+batch, 10 batches per lane per sweep, a 24h live window) are code defaults in `internal/relay`; change them
+there until a real need appears. Reconciliation reads `outbox.fanned_out_at` (ADR 29): there is no lookback
+window. Two lanes, each with its own budget, keep a large historical backlog from delaying recent losses: the
+live lane (younger than 24h) and the history lane (older, unbounded). After migration 00018 every historical
+outbox row is unmarked and is verified at up to 5,000 rows per lane per minute, so a large history drains
+gradually; watch `relayforge_reconciled_events_total`.
+
+A row that fails with an integrity or data error (SQLSTATE class 22 or 23) is isolated: healthy rows still go
+through, the failing row stays unmarked, is logged (at most 10 per sweep) with its ids and an error class, counted
+in `relayforge_reconcile_row_failures_total`, and retried every sweep, so it recovers by itself once the cause
+is fixed. Alert on `relayforge_reconcile_oldest_live_unmarked_age_seconds` staying above a few minutes. Every
+other error fails the whole sweep (`relayforge_reconcile_errors_total`).
 
 Metrics (enable with `RELAYFORGE_METRICS_ENABLED=true`, unauthenticated, restrict at the network level)
 have fixed names and no labels: `relayforge_delivery_*`, `relayforge_outbox_*`, `relayforge_fanout_*`,
-`relayforge_reconcile*`. Logs carry an `error_class`, never URLs, payloads, headers or secrets.
+`relayforge_reconcile*`, `relayforge_db_pool_*`. Logs carry an `error_class`, never URLs, payloads, headers or secrets.
+
+Stuck-work signals: `relayforge_delivery_oldest_due_age_seconds` (how long the longest-waiting due delivery
+has been due) and `relayforge_outbox_oldest_unpublished_age_seconds`. A count can be a healthy backlog; an
+age that keeps growing is not. `relayforge_delivery_expired_leases` above zero for longer than the recovery
+interval means no worker is running recovery. Alert on the ages, not on the counts.
 
 ### Running the tests
 
@@ -112,7 +144,6 @@ have fixed names and no labels: `relayforge_delivery_*`, `relayforge_outbox_*`, 
 - Destinations on private addresses are not supported (ADR 0023).
 - Delivery is at-least-once with no ordering guarantee. Receivers must deduplicate on
   `X-RelayForge-Delivery-Id` (ADR 0022 and 0024).
-- Events older than the reconciliation lookback whose broker message was lost are not repaired automatically.
 - Secret rotation for destinations has a schema column but no operation yet.
 
 ## Destination, subscription and delivery history API (Phase 4.3)
