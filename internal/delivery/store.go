@@ -47,7 +47,28 @@ type Claimed struct {
 // token. The caller must commit before doing any network I/O and must not hold
 // the transaction open while sending.
 func ClaimDue(ctx context.Context, tx database.Querier, now time.Time, limit int, lease time.Duration, workerID string) ([]Claimed, error) {
-	rows, err := tx.Query(ctx, `
+	rows, err := tx.Query(ctx, ClaimDueStatement, now, limit, lease.Seconds(), workerID)
+	if err != nil {
+		return nil, fmt.Errorf("claim deliveries: %w", err)
+	}
+	defer rows.Close()
+	var out []Claimed
+	for rows.Next() {
+		var c Claimed
+		if err := rows.Scan(&c.DeliveryID, &c.OrganizationID, &c.EventID, &c.DestinationID, &c.Attempt, &c.MaxAttempts,
+			&c.ClaimToken, &c.LeaseExpiresAt, &c.ClaimedAt); err != nil {
+			return nil, fmt.Errorf("scan claimed delivery: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ClaimDueStatement is the exact SQL of ClaimDue (parameters: now, limit, lease seconds, worker id).
+// It is a named constant, and exported, only so that a test can EXPLAIN the statement the workers
+// really run instead of a copy of it: the query plan of the claim path must keep using the global
+// deliveries_due_idx (ADR 31). Nothing else should use it.
+const ClaimDueStatement = `
 		WITH due AS (
 			SELECT d.id
 			  FROM deliveries d
@@ -64,23 +85,7 @@ func ClaimDue(ctx context.Context, tx database.Querier, now time.Time, limit int
 		  FROM due
 		 WHERE d.id = due.id
 		RETURNING d.id, d.organization_id, d.event_id, d.destination_id, d.attempt_count, d.max_attempts,
-		          d.claim_token::text, d.lease_expires_at, d.updated_at`,
-		now, limit, lease.Seconds(), workerID)
-	if err != nil {
-		return nil, fmt.Errorf("claim deliveries: %w", err)
-	}
-	defer rows.Close()
-	var out []Claimed
-	for rows.Next() {
-		var c Claimed
-		if err := rows.Scan(&c.DeliveryID, &c.OrganizationID, &c.EventID, &c.DestinationID, &c.Attempt, &c.MaxAttempts,
-			&c.ClaimToken, &c.LeaseExpiresAt, &c.ClaimedAt); err != nil {
-			return nil, fmt.Errorf("scan claimed delivery: %w", err)
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
+		          d.claim_token::text, d.lease_expires_at, d.updated_at`
 
 // SendData is everything needed to build one outgoing request.
 type SendData struct {

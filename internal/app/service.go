@@ -34,6 +34,9 @@ type Config struct {
 	// loginWindow. Zero disables the corresponding limit.
 	LoginFailuresPerAccount int
 	LoginFailuresPerIP      int
+	// OperationsDeadline bounds the database work of one operational read (ADR 31). Zero means the
+	// default of five seconds. Production leaves it unset; tests shorten it.
+	OperationsDeadline time.Duration
 }
 
 // DefaultConfig returns the documented defaults: 12 hour sessions, 7 day invitations.
