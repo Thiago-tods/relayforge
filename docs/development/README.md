@@ -151,7 +151,7 @@ interval means no worker is running recovery. Alert on the ages, not on the coun
 All routes live under `/api/v1/organizations/{organizationId}` and use the session cookie. Every state
 changing request also needs the `X-CSRF-Token` header and `Content-Type: application/json`. Bodies are strict:
 unknown fields are rejected and bodies over the server limit return `413`. List responses use
-`{"items": [...], "total": n, "limit": n, "offset": n}` with `limit` 1 to 100 (default 20) and `offset` >= 0.
+`{"items": [...], "total": n, "limit": n, "offset": n}` with `limit` 1 to 100 (default 50) and `offset` >= 0.
 Errors use `{"error": {"code": "...", "message": "..."}}`.
 
 ### Destinations
@@ -235,6 +235,48 @@ This is a rolling-deployment compatibility limitation, not a data-loss issue: a 
 rejected stays `IN_FLIGHT`, its lease expires, and it is recovered normally once the new binary runs. Keep the
 window between steps 1 and 3 short. See ADR 0030.
 
+### Operational read models (ADR 31)
+
+Two read-only, organization-scoped endpoints with the same session authentication and the `deliveries:read`
+permission (OWNER, ADMIN, DEVELOPER, VIEWER). They are computed live from PostgreSQL and take no row locks.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/organizations/{organizationID}/operations/queue` | Queue health snapshot: `pending, due, delayed, oldestDueAgeSeconds, inFlight, expiredLeases, generatedAt, capped` |
+| `GET /api/v1/organizations/{organizationID}/operations/deliveries?from=&to=` | `{generatedAt, from, to, created: {total, byStatus}, completed: {succeeded, failed, cancelled, failureRate, byFailureReason}, capped}` |
+
+- **Queue.** `pending` includes delayed deliveries. `due` is `PENDING` with `next_attempt_at <= generatedAt` and
+  `delayed` is `PENDING` after it (counted independently). **Due does not mean claimable**: deliveries of a `PAUSED`
+  destination are still due. `inFlight` includes expired leases; `expiredLeases` is `IN_FLIGHT` with
+  `lease_expires_at <= generatedAt` and means "awaiting recovery", not "dead worker". `oldestDueAgeSeconds` is exact
+  and `0` when nothing is due.
+- **Deliveries.** `created` counts deliveries by `created_at` in `[from, to)` and their **current** status.
+  `completed` counts deliveries by `completed_at` in the same window. The two cohorts are independent and do not have
+  to match. `from` and `to` are optional RFC 3339 timestamps (offsets honored, output in UTC); `to` defaults to now
+  and `from` to `to` minus 24 hours; the window must be positive and at most 31 days (`400 validation_failed`
+  otherwise). Unknown query parameters are ignored.
+- **Failure rate** is `failed / (succeeded + failed)`; cancelled deliveries are excluded and shown separately. It is
+  `null` when the denominator is zero or when the succeeded or failed count is capped.
+- **`byFailureReason`** always has six keys: the five reasons above and `UNRECORDED`, a response-only bucket for
+  `FAILED` deliveries that failed before reasons were recorded (NULL `failure_reason`).
+- **Count cap.** Every counter saturates at 100,000. A value of 100,000 means "at least 100,000" (a lower bound, never
+  an exact count), and the top-level `capped` is `true` when at least one returned count reached it. Counters below
+  the cap stay exact, and sums such as `pending = due + delayed` hold only while nothing is capped. The SQL `LIMIT`
+  bounds the matching rows each counter returns; it does not bound the index entries or heap rows PostgreSQL
+  examines, so a selective bucket (a rare status or failure reason) can scan a large part of the tenant's window.
+  The five-second deadline is what bounds the request.
+- **Window.** Bounds are normalized to UTC microseconds and must be in the years 0001 to 9999 (UTC); `0000-...` or an
+  offset that leaves the range is `400 validation_failed`. `generatedAt` is the service clock at the start of the
+  request, and a defaulted `to` is that instant; the newest edge of a window ending now can still change.
+- **In-flight counters** read the global `deliveries_lease_idx` with an organization filter, so their cost can grow with
+  the global in-flight and expired-lease population (accepted Stage 1 limitation, ADR 31).
+- **Limits.** The database work has a five-second deadline (`503 read_model_timeout`; a client that disconnects is not
+  a timeout), there is no per-organization rate limiter, and no payload, destination name or URL, secret or error text is returned.
+- **Migration 00020** adds two partial indexes (`deliveries_org_pending_idx`, `deliveries_org_completed_idx`),
+  built concurrently. They are expected to add about one index entry per delivery state change on the pending path
+  and one per completion; that is an architectural estimate, and the write overhead was not benchmarked. The claim
+  path keeps using `deliveries_due_idx`.
+
 ### Error codes
 
 | Status | Code | When |
@@ -245,6 +287,7 @@ window between steps 1 and 3 short. See ADR 0030.
 | 404 | `not_found` | Missing resource, malformed id, or a resource or organization of another tenant |
 | 409 | `destination_revoked`, `destination_name_taken`, `already_subscribed`, `subscription_revoked`, `endpoint_revoked` | Lifecycle conflicts |
 | 413, 415 | `request_too_large`, `unsupported_media_type` | Body limits |
+| 503 | `read_model_timeout` | An operational read exceeded its five-second deadline; use a shorter window |
 
 ### Permissions
 

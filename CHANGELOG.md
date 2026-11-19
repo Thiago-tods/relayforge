@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.4.5: operational read models)
+
+- `GET /api/v1/organizations/{organizationID}/operations/queue` and `.../operations/deliveries?from=&to=` (ADR 31): organization-scoped, read-only
+  operational views computed live from PostgreSQL, with the existing `deliveries:read` permission (no new role,
+  permission or write path). The queue view reports pending, due, delayed, the exact age of the oldest due
+  delivery, in-flight and expired leases. The delivery view reports a created cohort (by `created_at`, with current
+  status) and a completed cohort (by `completed_at`: succeeded, failed, cancelled, failure rate and failure reasons)
+  over a half-open window of at most 31 days (default: the last 24 hours).
+- Every counter saturates at 100,000 and the response says so with `capped`: a value of 100,000 means "at least
+  100,000", and `capped` means at least one counter reached it. The cap bounds the matching rows each count returns,
+  not the rows PostgreSQL examines (a rare bucket can examine much of a tenant's window); the deadline bounds the time.
+  A failure rate over a capped count is `null`. `UNRECORDED` is a response-only failure-reason bucket for deliveries
+  that failed before reasons were recorded. A due delivery of a paused destination still counts as due.
+- Migration 00020 adds `deliveries_org_pending_idx` and `deliveries_org_completed_idx` (partial, built
+  concurrently, idempotent, reversible). The claim path keeps using `deliveries_due_idx`.
+- The database work of an operational read has a five-second deadline (`503 read_model_timeout`); a client that
+  disconnects is not reported as a timeout. Window bounds are normalized to UTC microseconds and must fall in years
+  0001 to 9999 (UTC), otherwise `400 validation_failed`.
+- `delivery.ClaimDueStatement` is the SQL text of `ClaimDue`, moved into a named constant so a test can plan the real
+  statement (no behavior change).
+
+### Fixed
+
+- The development README documented a default page size of 20; the API's default `limit` is 50.
+
 ### Added (Phase 4.4.4: terminal failure reasons)
 
 - A delivery that ends as `FAILED` now records why, in a closed taxonomy: `DESTINATION_REJECTED` (final 4xx),

@@ -84,6 +84,7 @@ func (a *API) Handler() http.Handler {
 
 	a.registerIngestionRoutes(mux)
 	a.registerDeliveryRoutes(mux)
+	a.registerOperationsRoutes(mux)
 
 	mux.HandleFunc("/api/", a.handle(func(http.ResponseWriter, *http.Request) error { return app.ErrNotFound }))
 	return mux
