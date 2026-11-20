@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Thiago-tods/relayforge/internal/app"
@@ -183,26 +184,60 @@ func (a *API) revokeSubscription(w http.ResponseWriter, r *http.Request, p app.P
 }
 
 func (a *API) listDeliveries(w http.ResponseWriter, r *http.Request, p app.Principal) error {
+	q := r.URL.Query()
+	// All values of the parameter decide the path, not only the first: a repeated failureReason is a filtered request
+	// whatever its first value is. Exactly one empty value is the unfiltered request it always was.
+	reasons := q["failureReason"]
+	if len(reasons) > 1 || (len(reasons) == 1 && reasons[0] != "") {
+		// A request that filters by failure reason is authorized first: the service checks membership and
+		// deliveries:read, and only then runs this closure, which reads the pagination and the timestamps. A caller
+		// who is not a member therefore always gets 404, whatever the parameters say (ADR 32).
+		var pg page
+		items, total, err := a.svc.ListDeliveriesParsed(r.Context(), p, r.PathValue("organizationID"), func() (app.DeliveryFilter, int, int, error) {
+			if len(reasons) > 1 {
+				return app.DeliveryFilter{}, 0, 0, app.Validation("failureReason must be given at most once")
+			}
+			var err error
+			if pg, err = pagination(r); err != nil {
+				return app.DeliveryFilter{}, 0, 0, err
+			}
+			f, err := deliveryFilter(q)
+			return f, pg.Limit, pg.Offset, err
+		})
+		if err != nil {
+			return err
+		}
+		return writeList(w, items, total, pg)
+	}
 	pg, err := pagination(r)
 	if err != nil {
 		return err
 	}
-	q := r.URL.Query()
-	f := app.DeliveryFilter{DestinationID: q.Get("destinationId"), EventID: q.Get("eventId"), Status: q.Get("status")}
-	for name, dst := range map[string]*time.Time{"from": &f.From, "to": &f.To} {
-		if raw := q.Get(name); raw != "" {
-			t, err := time.Parse(time.RFC3339, raw)
-			if err != nil {
-				return app.Validation(name + " must be an RFC 3339 timestamp")
-			}
-			*dst = t
-		}
+	f, err := deliveryFilter(q)
+	if err != nil {
+		return err
 	}
 	items, total, err := a.svc.ListDeliveries(r.Context(), p, r.PathValue("organizationID"), f, pg.Limit, pg.Offset)
 	if err != nil {
 		return err
 	}
 	return writeList(w, items, total, pg)
+}
+
+// deliveryFilter reads the filters of the delivery list from the query. The order of the checks is the one the
+// handler always had.
+func deliveryFilter(q url.Values) (app.DeliveryFilter, error) {
+	f := app.DeliveryFilter{DestinationID: q.Get("destinationId"), EventID: q.Get("eventId"), Status: q.Get("status"), FailureReason: q.Get("failureReason")}
+	for name, dst := range map[string]*time.Time{"from": &f.From, "to": &f.To} {
+		if raw := q.Get(name); raw != "" {
+			t, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				return app.DeliveryFilter{}, app.Validation(name + " must be an RFC 3339 timestamp")
+			}
+			*dst = t
+		}
+	}
+	return f, nil
 }
 
 func (a *API) getDelivery(w http.ResponseWriter, r *http.Request, p app.Principal) error {

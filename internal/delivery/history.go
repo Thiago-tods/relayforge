@@ -54,6 +54,9 @@ type HistoryFilter struct {
 	DestinationID string
 	EventID       string
 	Status        string
+	// FailureReason is "", one of the five FailureReason values, or UnrecordedFailureReason (a FAILED
+	// delivery with no recorded reason). A reason implies status FAILED. The caller rejects a conflicting Status.
+	FailureReason string
 	From, To      time.Time
 }
 
@@ -82,12 +85,19 @@ func nullTime(t time.Time) any {
 // with the destination name joined in one query (no N+1). The organization is
 // part of every predicate, so another tenant's rows can never be returned.
 func ListDeliveries(ctx context.Context, db database.Querier, orgID string, f HistoryFilter, limit, offset int) ([]DeliveryRecord, int, error) {
-	const where = ` WHERE d.organization_id = $1
+	where := ` WHERE d.organization_id = $1
 		AND ($2::uuid IS NULL OR d.destination_id = $2::uuid)
 		AND ($3::uuid IS NULL OR d.event_id = $3::uuid)
 		AND ($4 = '' OR d.status = $4)
 		AND ($5::timestamptz IS NULL OR d.created_at >= $5)
 		AND ($6::timestamptz IS NULL OR d.created_at < $6)`
+	// The reason clause is one of six constants (see failureReasonClause), appended only when the filter is set, so
+	// a request without it runs exactly the statements it always ran.
+	reason, err := failureReasonClause(f.FailureReason)
+	if err != nil {
+		return nil, 0, err
+	}
+	where += reason
 	from, to := nullTime(f.From), nullTime(f.To)
 	var total int
 	if err := db.QueryRow(ctx, "SELECT count(*) FROM deliveries d"+where, orgID, nullText(f.DestinationID), nullText(f.EventID), f.Status, from, to).Scan(&total); err != nil {

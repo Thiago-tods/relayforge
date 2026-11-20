@@ -10,6 +10,35 @@ import (
 	"github.com/Thiago-tods/relayforge/internal/platform/apperror"
 )
 
+// The failure feed uses the same window rules with a seven-day default span (ADR 32).
+func TestFailureFeedWindowDefaultsToSevenDaysAndKeepsTheStageOneLimits(t *testing.T) {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)
+	from, to, err := operationsWindowOf("", "", now, defaultFailureFeedWindow)
+	if err != nil || !to.Equal(now) || !from.Equal(now.Add(-7*24*time.Hour)) {
+		t.Fatalf("default window: %v %v %v", from, to, err)
+	}
+	// Only `to`: the default span counts back from it.
+	from, to, err = operationsWindowOf("", "2026-11-10T00:00:00Z", now, defaultFailureFeedWindow)
+	if err != nil || !from.Equal(time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)) || !to.Equal(time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("only to: %v %v %v", from, to, err)
+	}
+	// 31 days is the longest span, a microsecond more is refused, and normalization is shared with Stage 1.
+	if _, _, err := operationsWindowOf("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z", now, defaultFailureFeedWindow); err != nil {
+		t.Fatalf("exactly 31 days: %v", err)
+	}
+	if _, _, err := operationsWindowOf("2026-10-01T00:00:00Z", "2026-11-01T00:00:00.000001Z", now, defaultFailureFeedWindow); err == nil {
+		t.Fatal("31 days and a microsecond must be refused")
+	}
+	from, to, err = operationsWindowOf("2026-11-18T09:00:00.1234567-03:00", "2026-11-18T10:00:00-03:00", now, defaultFailureFeedWindow)
+	if err != nil || !from.Equal(time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)) || to.Location() != time.UTC {
+		t.Fatalf("offsets and microseconds: %v %v %v", from, to, err)
+	}
+	// The summary default is untouched.
+	if f, _, err := operationsWindow("", "", now); err != nil || !f.Equal(now.Add(-24*time.Hour)) {
+		t.Fatalf("the summary still defaults to 24 hours: %v %v", f, err)
+	}
+}
+
 func TestOperationsWindowDefaultsLimitsAndOffsets(t *testing.T) {
 	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	type want struct {

@@ -277,6 +277,53 @@ permission (OWNER, ADMIN, DEVELOPER, VIEWER). They are computed live from Postgr
   and one per completion; that is an architectural estimate, and the write overhead was not benchmarked. The claim
   path keeps using `deliveries_due_idx`.
 
+### Operational failure visibility (ADR 32)
+
+Same session authentication, same `deliveries:read` permission (OWNER, ADMIN, DEVELOPER, VIEWER), same rules as the read
+models above: organization-scoped, read-only, a non-member or malformed organization id gets `404` **before** any
+parameter is validated, and nothing sensitive is returned (no payload, destination URL, secret, raw error or claim
+data).
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/organizations/{organizationID}/operations/failures` | Current failures, newest completion first: `{generatedAt, from, to, items, nextCursor}` |
+| `GET /api/v1/organizations/{organizationID}/operations/queue/age` | Overdue-age distribution of due deliveries: `{generatedAt, buckets, capped}` |
+| `GET /api/v1/organizations/{organizationID}/deliveries?failureReason=` | The existing list, narrowed to one failure reason |
+
+- **Failure feed.** Optional `limit` (1 to 100, default 50), `cursor`, `failureReason`, `destinationId`, `from`, `to`.
+  Order is `completed_at DESC, id DESC` with **keyset** pagination: pass the `nextCursor` of one page as the `cursor` of the
+  next; `nextCursor` is `null` on the last page. There is no offset and no total. The cursor is opaque and carries a
+  position only (never authorization): another tenant's cursor cannot reach your data, and a malformed or altered one is
+  `400 validation_failed`. `from` and `to` bound `completed_at` as `[from, to)`; the default window is the **last seven
+  days**, the longest is 31 days, and the bounds follow the delivery summary's normalization (UTC, microseconds, years
+  0001 to 9999). Each item has `deliveryId, eventId, destinationId, destinationName, failureReason, attemptCount,
+  lastHttpStatus, lastErrorClass, createdAt, completedAt`. `failureReason` is always present: a delivery that failed
+  before reasons were recorded is `UNRECORDED` (the existing delivery list keeps omitting it). A delivery that is no
+  longer `FAILED` is not a current failure and is not listed.
+- **Feed consistency.** A page is one snapshot, but pages are eventually consistent: `completed_at` comes from the
+  worker's clock, so a delivery that commits late can sort behind a cursor you already hold and a continuation will not
+  show it. Poll the first page for the newest failures.
+- **Reason filter.** `failureReason` is one of `DESTINATION_REJECTED`, `REDIRECT_REFUSED`, `EGRESS_BLOCKED`,
+  `RETRIES_EXHAUSTED`, `INTERNAL_ERROR` or `UNRECORDED` (a `FAILED` delivery with no recorded reason). It implies
+  `status=FAILED`: `status=FAILED` is accepted, any other `status` is `400`, and an unknown value is `400`. Ordering
+  (`createdAt` descending), offset pagination, the response shape and the **exact** `total` are unchanged, and a request
+  without `failureReason` is unchanged byte for byte. Only a filtered request runs under the five-second deadline. A
+  filtered request is authorized before any of its parameters (`limit`, `offset`, `from`, `to`, `status`, the reason) is
+  validated: a non-member always gets `404`, a member gets `400` for malformed input.
+- **Queue age.** Overdue age is `generatedAt - next_attempt_at` of `PENDING` deliveries with `next_attempt_at <=
+  generatedAt`: time overdue, **not** time since creation (a retry restarts it). Seven fixed half-open buckets, in
+  seconds: `<1m` [0, 60), `1-5m` [60, 300), `5-15m` [300, 900), `15-60m` [900, 3600), `1-6h` [3600, 21600), `6-24h`
+  [21600, 86400) and `>24h` [86400, no limit; `maxSeconds` is `null`). Future deliveries are excluded and a paused
+  destination's due deliveries are counted. Each bucket saturates independently at 100,000 ("at least 100,000") and `capped`
+  is `true` when any did; `generatedAt` is the service clock, the same instant for every bucket.
+- **Limits.** The feed, queue age and a filtered list use the five-second deadline (`503 read_model_timeout`; a client
+  that disconnects is not a timeout). There is no per-organization rate limiter and no concurrency limit on these reads.
+- **Migration 00021** adds `deliveries_org_failed_idx` (partial on `status = 'FAILED'`, built concurrently), added
+  because query-plan tests showed the feed reading the whole window without it. It is expected to add one index entry per
+  delivery that ends `FAILED`; that is an architectural estimate, and the write overhead was **not benchmarked**. The
+  claim path keeps using `deliveries_due_idx`.
+- **Not yet available** (deferred): destination health, the cross-delivery attempt feed and time-series metrics.
+
 ### Error codes
 
 | Status | Code | When |
@@ -287,7 +334,7 @@ permission (OWNER, ADMIN, DEVELOPER, VIEWER). They are computed live from Postgr
 | 404 | `not_found` | Missing resource, malformed id, or a resource or organization of another tenant |
 | 409 | `destination_revoked`, `destination_name_taken`, `already_subscribed`, `subscription_revoked`, `endpoint_revoked` | Lifecycle conflicts |
 | 413, 415 | `request_too_large`, `unsupported_media_type` | Body limits |
-| 503 | `read_model_timeout` | An operational read exceeded its five-second deadline; use a shorter window |
+| 503 | `read_model_timeout` | An operational read (queue, summary, failure feed, queue age, or a delivery list filtered by `failureReason`) exceeded its five-second deadline; use a shorter window |
 
 ### Permissions
 

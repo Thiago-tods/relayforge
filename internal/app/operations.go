@@ -93,6 +93,12 @@ func (s *Service) DeliverySummary(ctx context.Context, p Principal, orgID, fromR
 // precision PostgreSQL stores, so the window the response echoes is exactly the window that was
 // read. The maximum is inclusive: exactly 31 days is allowed.
 func operationsWindow(fromRaw, toRaw string, now time.Time) (from, to time.Time, err error) {
+	return operationsWindowOf(fromRaw, toRaw, now, defaultOperationsWindow)
+}
+
+// operationsWindowOf is operationsWindow with the span used when `from` is not given: 24 hours for the
+// delivery summary and seven days for the failure feed. Every other rule is the same.
+func operationsWindowOf(fromRaw, toRaw string, now time.Time, defaultSpan time.Duration) (from, to time.Time, err error) {
 	to = now
 	if toRaw != "" {
 		if to, err = time.Parse(time.RFC3339, toRaw); err != nil {
@@ -104,7 +110,7 @@ func operationsWindow(fromRaw, toRaw string, now time.Time) (from, to time.Time,
 			return time.Time{}, time.Time{}, Validation("from must be an RFC 3339 timestamp")
 		}
 	} else {
-		from = to.Add(-defaultOperationsWindow)
+		from = to.Add(-defaultSpan)
 	}
 	from, to = normalizeInstant(from), normalizeInstant(to)
 	if !supportedInstant(from) {
