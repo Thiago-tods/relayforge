@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.4.5b: operational failure visibility)
+
+- `GET /api/v1/organizations/{organizationID}/operations/failures` (ADR 32): the organization's current failures, most
+  recent completion first, with keyset pagination (`limit` 1 to 100, default 50, and an opaque `cursor` that carries a
+  position only). Filters: `failureReason`, `destinationId`, `from`, `to` (default window seven days, at most 31 days,
+  same normalization as the delivery summary). A legacy failure with no recorded reason is shown as `UNRECORDED`. A
+  delivery that is no longer `FAILED` (a future redrive) is not listed. Operational metadata only: no payload, destination
+  URL, secret, raw error or claim data. The feed is eventually consistent across pages (late commits can land behind a
+  cursor); start again from the first page for the newest failures.
+- `GET /api/v1/organizations/{organizationID}/operations/queue/age`: how long due deliveries have been overdue
+  (`generatedAt - next_attempt_at`, not age since creation) in seven fixed buckets (`<1m`, `1-5m`, `5-15m`, `15-60m`,
+  `1-6h`, `6-24h`, `>24h`). One statement and one clock instant; each bucket saturates on its own at 100,000 and
+  `capped` says so. A paused destination's due deliveries are counted.
+- `GET .../deliveries?failureReason=`: filter the delivery list by one of the five failure reasons or `UNRECORDED`. A
+  reason implies `status=FAILED` and any other `status` is `400`. Without the parameter the list is unchanged (same
+  SQL, same bytes, no deadline). The exact `total` is kept; a filtered request runs under the five-second deadline and is
+  authorized before its pagination, timestamps, status and reason are validated (a non-member gets `404`, never `400`).
+- Migration 00021 adds `deliveries_org_failed_idx` (partial on `status = 'FAILED'`, built concurrently, idempotent,
+  reversible). It was added because query-plan tests at 300,000 rows showed the feed reading the whole window without it
+  (a sequential scan over 31 days). Its write overhead was **not benchmarked**; the expectation of one extra entry per
+  delivery that ends `FAILED` is an architectural estimate, not a measured result.
+- Same authorization as the other operational reads (`deliveries:read`, non-member 404 before validation), the same
+  five-second deadline (`503 read_model_timeout`) and no new permission, write route, cache or bulkhead.
+
 ### Added (Phase 4.4.5: operational read models)
 
 - `GET /api/v1/organizations/{organizationID}/operations/queue` and `.../operations/deliveries?from=&to=` (ADR 31): organization-scoped, read-only
