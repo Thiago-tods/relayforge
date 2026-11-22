@@ -400,3 +400,38 @@ The tests use the disposable PostgreSQL strategy described above; no Docker and 
 $env:RELAYFORGE_TEST_DATABASE_URL = "postgres://USER:PASSWORD@127.0.0.1:54329/postgres?sslmode=disable"
 go test -count=1 ./internal/app/ ./internal/httpapi/ ./internal/delivery/ ./internal/database/
 ```
+
+## Frontend (web/)
+
+The console is React, TypeScript and Vite. It uses no state library and no runtime dependency beyond React and
+React Router; everything it shows comes from the real API.
+
+**Running it.** Start the Go API, then `cd web; npm run dev` (port 5173). Vite forwards `/api` to
+`http://[::1]:8080` (`web/vite.config.ts`). The IPv6 target is deliberate: on a machine where another server holds
+`127.0.0.1:8080` (for example Apache), `localhost` can reach the wrong process. `changeOrigin` stays `false`
+because `POST /api/v1/auth/csrf` compares `Origin` with `Host`. There is no CORS: the browser talks to one origin.
+
+**Production.** The Go API does not serve static files. The intended setup is a reverse proxy that serves `web/dist`
+and forwards `/api` to the API on the same origin, because the session cookie is scoped to `Path=/api`. The proxy
+configuration is not part of this repository yet.
+
+**Sessions and CSRF (ADR 8, ADR 10).** The session is an HttpOnly cookie that the browser sends itself. The CSRF
+token is held in memory only (`web/src/api/client.ts`); it is never stored or logged.
+- Login and register return the token. After a page reload there is none, so the first state-changing request
+  fetches one with `POST /auth/csrf` (a header `X-Requested-With: XMLHttpRequest` is required).
+- The server keeps one token hash per session, and rotating replaces it. Tabs of one browser share the cookie and
+  therefore the token, so a rotation in one tab invalidates the token in the others.
+- When a request is answered `403 csrf_invalid`, the client rotates once and sends that request once more. The
+  backend checks the token before the handler runs, so the rejected request changed nothing and repeating it is
+  safe. Concurrent failures in a tab share one rotation. A second failure is shown as an error, never retried.
+- After a rotation, and when another tab signs in or out, the tab re-reads `GET /auth/me`. If the session now
+  belongs to a different user, the tab clears its state and asks for sign-in. Tabs tell each other only
+  "signed-in" or "signed-out" through `BroadcastChannel`, never a token or identity.
+- The session has an absolute lifetime and is never extended: the UI warns shortly before it ends and then signs out.
+
+**Permissions.** The API returns a role, not a permission list. `web/src/org/permissions.ts` is a client copy of
+the matrix in `internal/tenancy/role.go`, used only to decide which controls to show. The backend authorizes every
+request and a 403 always wins. `permissions.drift.test.ts` parses `role.go` and fails when the two differ.
+
+**Checks.** `npm run format:check`, `lint`, `typecheck`, `test` and `build`. The tests stub `fetch`; they are not
+end-to-end evidence.
