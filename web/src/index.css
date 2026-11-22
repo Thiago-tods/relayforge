@@ -326,6 +326,27 @@ a {
     display: none;
   }
 
+  /* Keep the whole top bar on one row: the organization switcher takes the space that is left and shrinks, instead
+     of pushing the theme switch and Sign out off the screen. */
+  .topbar {
+    gap: 0.5rem;
+    padding-inline: 0.5rem;
+  }
+
+  .topbar-spacer {
+    display: none;
+  }
+
+  .org-switch {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .org-switch select {
+    width: 100%;
+    min-width: 0;
+  }
+
   .sidebar {
     position: fixed;
     top: 3.25rem;
@@ -355,6 +376,18 @@ a {
     inset: 3.25rem 0 0;
     z-index: 25;
     background: rgb(0 0 0 / 40%);
+  }
+}
+
+/* On the narrowest screens the brand name gives way to the organization switcher. It stays for assistive technology. */
+@media (max-width: 30rem) {
+  .topbar .brand {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 
