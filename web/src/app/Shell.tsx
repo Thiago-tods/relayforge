@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/authContext'
+import { can } from '../org/permissions'
 import { Button } from '../ui/Button'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -11,6 +12,10 @@ export function Shell() {
   const location = useLocation()
   const match = useMatch('/o/:orgId/*')
   const orgId = match?.params.orgId ?? ''
+  // The role comes from the organizations the server listed for this user, so a foreign id in the URL gets none.
+  // This only decides which links to show; the backend authorizes every request.
+  const role = organizations.find((o) => o.id === orgId)?.role
+  const showOperations = can(role, 'deliveries:read')
   // The drawer is open only for the page it was opened on, so navigating closes it without an effect.
   const [openOn, setOpenOn] = useState<string | null>(null)
   const menuOpen = openOn === location.pathname
@@ -111,6 +116,14 @@ export function Shell() {
             <NavLink to={`/o/${orgId}`} end>
               Overview
             </NavLink>
+          ) : null}
+          {orgId !== '' && showOperations ? (
+            <div role="group" aria-labelledby="nav-operations" className="nav-group">
+              <p id="nav-operations" className="nav-group-label">
+                Operations
+              </p>
+              <NavLink to={`/o/${orgId}/operations/queue`}>Queue</NavLink>
+            </div>
           ) : null}
         </nav>
         {menuOpen ? (

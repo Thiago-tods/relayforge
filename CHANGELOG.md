@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F1a: operations queue page)
+
+- `web/`: the queue page at `/o/:orgId/operations/queue` (sidebar group "Operations", one entry "Queue"). It reads
+  `GET /operations/queue` and `GET /operations/queue/age` once on open and again only on Refresh; it never polls.
+- Delivery counts (pending, due, delayed, in flight, expired leases) and the oldest due age use the backend's own
+  definitions. A count that reaches 100,000 is shown as "≥ 100,000", decided per count and never as an exact value.
+  The overdue-age distribution is shown exactly as returned: seven fixed buckets, no percentiles.
+- Shared pieces for the next phases: operations API module, UTC formatting helpers and a `useResource` fetch hook
+  (abort on unmount or organization change, nothing of another organization is ever shown).
+- No backend change and no new dependency.
+
 ### Added (Phase F0: frontend foundation)
 
 - `web/`: application shell (sidebar that becomes a drawer on narrow screens, top bar with organization switcher,

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { PublicOnly, RequireAuth } from '../auth/guards'
 import { LoginPage } from '../features/auth/LoginPage'
 import { RegisterPage } from '../features/auth/RegisterPage'
+import { QueuePage } from '../features/operations/QueuePage'
 import { OrgPickerPage } from '../features/orgs/OrgPickerPage'
 import { OverviewPage } from '../features/orgs/OverviewPage'
 import { OrgLayout } from '../org/OrgLayout'
@@ -21,6 +22,7 @@ export function AppRoutes() {
           <Route path="/orgs" element={<OrgPickerPage />} />
           <Route path="/o/:orgId" element={<OrgLayout />}>
             <Route index element={<OverviewPage />} />
+            <Route path="operations/queue" element={<QueuePage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
           <Route path="*" element={<NotFoundPage />} />
