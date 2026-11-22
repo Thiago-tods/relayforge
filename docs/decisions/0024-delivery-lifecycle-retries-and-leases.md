@@ -16,7 +16,7 @@ the worker uses them.
 ## Decision
 
 **Lifecycle.** `PENDING -> IN_FLIGHT` (claim) `-> SUCCEEDED | PENDING (retry or expired lease) | FAILED`;
-`PENDING -> CANCELLED` (destination revoked). Terminal rows never change (Go state machine and database trigger).
+`PENDING -> CANCELLED` (destination revoked). Terminal rows never change (Go state machine and database trigger), with one controlled exception: a `FAILED` delivery can be redriven back to `PENDING` by an operator (ADR 34, migration 00022), which raises its `max_attempts` and keeps its attempt history; `SUCCEEDED` and `CANCELLED` stay immutable.
 
 **Claim.** One short transaction selects due `PENDING` deliveries of non-paused, non-revoked destinations
 with `FOR UPDATE SKIP LOCKED`, sets `IN_FLIGHT`, a new random `claim_token` and `lease_expires_at`, increments

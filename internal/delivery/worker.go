@@ -285,12 +285,18 @@ func (w *Worker) Process(ctx context.Context, c Claimed) {
 	}
 }
 
-// policyFor returns the retry policy bounded by the delivery's own max_attempts:
-// the schema requires a PENDING delivery to have attempts left, so the decision
-// must never schedule a retry beyond what the row allows.
+// policyFor returns the retry policy with the delivery's own max_attempts as the attempt limit.
+//
+// The row is authoritative (ADR 34). The schema requires a PENDING delivery to have attempts left, so
+// the decision must never schedule a retry beyond what the row allows, and since a redrive raises the
+// row's max_attempts above the policy's default, the row's value must also be able to grant more
+// attempts than the default. Fan-out never sets max_attempts, so every ordinary delivery has the
+// column default (8), which is the default policy's limit: ordinary deliveries are unchanged. The
+// policy's own MaxAttempts is only the fallback for a row without a positive value, which the
+// schema forbids. Claim finalization and lease recovery both decide through this function.
 func (w *Worker) policyFor(maxAttempts int) RetryPolicy {
 	p := w.d.Policy
-	if maxAttempts > 0 && maxAttempts < p.MaxAttempts {
+	if maxAttempts > 0 {
 		p.MaxAttempts = maxAttempts
 	}
 	return p

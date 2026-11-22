@@ -37,9 +37,11 @@ var errRollBack = errors.New("roll back the test transaction")
 // redrive: it can clear deliveries.failure_reason (and completed_at) in one UPDATE while the
 // attempt history, including the terminal reason of the attempt that failed, stays untouched.
 //
-// Redrive is NOT implemented, and the production transition trigger still forbids it. The test
-// therefore disables that one trigger inside a transaction and always rolls the transaction back,
-// so the trigger is restored (DDL is transactional in PostgreSQL) and nothing persists.
+// Redrive is implemented since migration 00022 (ADR 34), but only through the guarded transition that
+// schema_delivery_redrive_test.go covers (flag, +5 budget). This test is about the reason columns alone, so it
+// disables the transition trigger inside a transaction and always rolls the transaction back: the trigger is
+// restored (DDL is transactional in PostgreSQL) and nothing persists. The last check below, a plain status change
+// with the trigger enabled, is still refused.
 func TestTheReasonConstraintsLeaveRoomForARedrive(t *testing.T) {
 	f := newDeliveryFixture(t)
 	ctx := context.Background()

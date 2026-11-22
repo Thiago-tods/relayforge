@@ -234,7 +234,7 @@ deadline; hourly rollups would be the next step and are explicitly deferred.
 - Operators get per-organization queue health, delivery outcomes and failure causes without new permissions.
 - `capped` makes truncation explicit; clients must treat a capped count as a lower bound.
 - A paused destination's backlog shows as due. Operators should read `due` together with their destinations' status.
-- Redrive (a later phase) clears `completed_at` and `failure_reason`, so a redriven delivery leaves the `completed`
+- Redrive (a later phase, implemented in ADR 34) clears `completed_at` and `failure_reason`, so a redriven delivery leaves the `completed`
   cohort and is counted by its current status; attempt history keeps its terminal reasons.
 
 ## Not in this phase

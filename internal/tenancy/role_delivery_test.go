@@ -19,6 +19,8 @@ func TestDestinationSubscriptionAndDeliveryPermissionMatrix(t *testing.T) {
 		{PermSubscriptionsRead, true, true, true, true},
 		{PermSubscriptionsWrite, true, true, true, false},
 		{PermDeliveriesRead, true, true, true, true},
+		// Redrive (ADR 34): OWNER, ADMIN and DEVELOPER; VIEWER stays read-only.
+		{PermDeliveriesRedrive, true, true, true, false},
 	}
 	for _, r := range matrix {
 		for role, want := range map[Role]bool{RoleOwner: r.owner, RoleAdmin: r.admin, RoleDeveloper: r.dev, RoleViewer: r.viewer} {

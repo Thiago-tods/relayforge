@@ -43,6 +43,9 @@ const (
 	DestinationSecretRotated = "destination.secret_rotated"
 	SubscriptionCreated      = "subscription.created"
 	SubscriptionRevoked      = "subscription.revoked"
+
+	// DeliveryRedriven records an operator returning a FAILED delivery to the pipeline (ADR 34).
+	DeliveryRedriven = "delivery.redriven"
 )
 
 // Event is one audit record. OrganizationID, ActorUserID and ResourceID are

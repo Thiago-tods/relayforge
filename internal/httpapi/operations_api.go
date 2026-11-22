@@ -15,6 +15,23 @@ func (a *API) registerOperationsRoutes(mux *http.ServeMux) {
 	// ADR 32.
 	mux.HandleFunc("GET "+ops+"/failures", a.handle(a.authed(a.failureFeed)))
 	mux.HandleFunc("GET "+ops+"/queue/age", a.handle(a.authed(a.queueAge)))
+	// ADR 33.
+	mux.HandleFunc("GET "+ops+"/attempts", a.handle(a.authed(a.attemptFeed)))
+}
+
+// attemptFeed passes the raw query text to the service, which validates it only after authorization (a
+// non-member gets 404, never a validation error). Unknown parameters, including a destinationId (deferred), are
+// ignored, like everywhere else.
+func (a *API) attemptFeed(w http.ResponseWriter, r *http.Request, p app.Principal) error {
+	q := r.URL.Query()
+	out, err := a.svc.AttemptFeed(r.Context(), p, r.PathValue("organizationID"), app.AttemptFeedQuery{
+		Limit: q.Get("limit"), Cursor: q.Get("cursor"), Outcome: q.Get("outcome"),
+		DeliveryID: q.Get("deliveryId"), From: q.Get("from"), To: q.Get("to"),
+	})
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, out)
 }
 
 func (a *API) queueAge(w http.ResponseWriter, r *http.Request, p app.Principal) error {

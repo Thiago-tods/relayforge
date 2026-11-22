@@ -6,13 +6,50 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase 4.4.6: delivery redrive)
+
+- `POST /api/v1/organizations/{organizationID}/deliveries/{deliveryID}/redrive` (ADR 34): returns one `FAILED` delivery to
+  `PENDING`, due immediately, and raises its `max_attempts` by five, capped at 50. Body `{"reason", "expectedAttemptCount"}`
+  (both required; the reason is recorded in the audit event only). `200` with the delivery and the previous and new budget.
+  `attempt_count` is never reset and attempt history is untouched, so attempt numbers keep growing. Errors: `404`, `403`,
+  `400`, and `409` `delivery_not_failed`, `delivery_changed`, `destination_revoked`, `retry_budget_exhausted`,
+  `event_payload_unavailable`, plus `503 lock_timeout` (a transaction-local five-second `lock_timeout`).
+- New permission `deliveries:redrive` for OWNER, ADMIN and DEVELOPER (not VIEWER). Audit action `delivery.redriven` written
+  in the same transaction. Metric `relayforge_delivery_redriven_total`.
+- A redrive never reconstructs or substitutes a payload: inside the transaction PostgreSQL checks that the event exists,
+  is non-empty and still hashes to its recorded SHA-256, otherwise `409 event_payload_unavailable`.
+- Migration 00022 replaces `relayforge_enforce_delivery_transition()`: a `FAILED` delivery may return to `PENDING` only
+  with the transaction-local flag `relayforge.redrive`, exactly +5 budget (cap 50), unchanged `attempt_count` and the
+  reason and completion time cleared. `SUCCEEDED` and `CANCELLED` stay immutable. The flag is an application guard, not a
+  security boundary. `Down` restores the 00012 function exactly. Deploy: migration, then workers, then API.
+- Behavior change in the delivery worker: the row's `max_attempts` is now authoritative for the attempt limit (claim
+  finalization and lease recovery), so a raised budget grants real attempts. Ordinary deliveries still have the default
+  of 8, so nothing changes for them. Retry delays are still the attempt-number backoff (long for attempts 9 to 13).
+- Locking: a shared organization lock (new `tenancy.LockOrganizationShared`, used only by redrive), then the destination
+  `FOR SHARE`, then the delivery row `FOR NO KEY UPDATE`; the same order as destination revoke. Redrives of different
+  deliveries do not queue behind each other, and membership changes and revokes cannot interleave with one.
+
+### Added (Phase 4.4.7b: attempt activity feed)
+
+- `GET /api/v1/organizations/{organizationID}/operations/attempts` (ADR 33): the organization's recorded delivery attempts
+  across deliveries, most recent start first, with keyset pagination (`limit` 1 to 100, default 50, and an opaque `cursor`
+  that carries a position only and is refused by the failure feed). Filters: `outcome` (one of the seven attempt outcomes,
+  `ABANDONED` included), `deliveryId`, `from`, `to` (default window 24 hours, at most 31 days, same normalization as the
+  other operational reads). There is no `destinationId` filter yet. Items are stored fields only (no derived flag) and
+  carry operational metadata only: no payload, response body, destination URL, secret, raw error or claim data. The feed
+  is a live tail: a late-committing attempt can land behind a cursor.
+- Same authorization as the other operational reads (`deliveries:read`, non-member 404 before validation), the same
+  five-second deadline (`503 read_model_timeout`) and no new permission, write route, cache or bulkhead. No migration and
+  no new index: the existing `delivery_attempts_history_idx` serves the window, order and cursor. Plans on 200,000
+  synthetic attempts used it in index order with no sequential scan; a rare `outcome` filter was not measured at scale.
+
 ### Added (Phase 4.4.5b: operational failure visibility)
 
 - `GET /api/v1/organizations/{organizationID}/operations/failures` (ADR 32): the organization's current failures, most
   recent completion first, with keyset pagination (`limit` 1 to 100, default 50, and an opaque `cursor` that carries a
   position only). Filters: `failureReason`, `destinationId`, `from`, `to` (default window seven days, at most 31 days,
   same normalization as the delivery summary). A legacy failure with no recorded reason is shown as `UNRECORDED`. A
-  delivery that is no longer `FAILED` (a future redrive) is not listed. Operational metadata only: no payload, destination
+  delivery that is no longer `FAILED` (a future redrive; implemented later, see ADR 34) is not listed. Operational metadata only: no payload, destination
   URL, secret, raw error or claim data. The feed is eventually consistent across pages (late commits can land behind a
   cursor); start again from the first page for the newest failures.
 - `GET /api/v1/organizations/{organizationID}/operations/queue/age`: how long due deliveries have been overdue

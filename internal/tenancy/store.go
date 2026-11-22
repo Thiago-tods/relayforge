@@ -115,6 +115,28 @@ func LockOrganization(ctx context.Context, db database.Querier, orgID string) er
 	return nil
 }
 
+// LockOrganizationShared takes a SHARED row lock on the organization for the rest of the transaction.
+//
+// It is used only by the redrive flow (ADR 34). A shared lock conflicts with LockOrganization, which
+// every membership change, destination mutation and revoke takes first, so while a redrive holds it
+// no role can change, no member can be removed and no destination can be revoked or paused; and a
+// redrive that starts after such a change waits for it and then reads the committed state. Unlike
+// the exclusive lock, shared locks do not conflict with each other, so redrives of unrelated
+// deliveries in one organization do not queue behind one another. Callers must take it before any
+// other lock of the transaction (organization, then destination, then delivery) and must not use it
+// for anything that writes memberships.
+func LockOrganizationShared(ctx context.Context, db database.Querier, orgID string) error {
+	var id string
+	err := db.QueryRow(ctx, "SELECT id FROM organizations WHERE id = $1 FOR SHARE", orgID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOrgNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock organization shared: %w", err)
+	}
+	return nil
+}
+
 // OrganizationByID loads an organization without any authorization. Callers
 // must have verified membership first.
 func OrganizationByID(ctx context.Context, db database.Querier, orgID string) (Organization, error) {

@@ -132,6 +132,7 @@ func run(ctx context.Context, service, defaultHTTPAddr string, opts Options,
 			appCfg.Box = box
 			appCfg.LoginFailuresPerAccount = cfg.LoginFailuresPerAccount
 			appCfg.LoginFailuresPerIP = cfg.LoginFailuresPerIP
+			appCfg.Redriven = registry.Counter("relayforge_delivery_redriven_total", "Failed deliveries returned to the pipeline by an operator redrive.")
 			svc, err := app.New(pool, identity.NewHasher(identity.DefaultArgon2Params), appCfg, nil, log)
 			if err != nil {
 				log.Error("cannot initialize application service", "error", err)
