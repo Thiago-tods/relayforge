@@ -1,5 +1,4 @@
 import { getQueue, getQueueAge } from '../../api/operations'
-import { isApiError, userMessage } from '../../api/errors'
 import { formatAge, isCapped } from '../../lib/format'
 import { useResource } from '../../lib/useResource'
 import { useOrg } from '../../org/orgContext'
@@ -8,6 +7,7 @@ import { Count } from '../../ui/Count'
 import { DateTime } from '../../ui/DateTime'
 import { MetricCard } from '../../ui/MetricCard'
 import { LoadingState } from '../../ui/states'
+import { ErrorBanner } from './ErrorBanner'
 import { QueueAgeChart } from './QueueAgeChart'
 import {
   COUNTS_NOTE,
@@ -17,17 +17,7 @@ import {
   TWO_READS_NOTE,
 } from './queueLabels'
 
-function ErrorBanner({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  return (
-    <div className="form-error" role="alert">
-      <p>{userMessage(error)}</p>
-      {isApiError(error) && error.code === 'read_model_timeout' ? (
-        <p>This read has no time window to narrow. Try again in a moment.</p>
-      ) : null}
-      <Button onClick={onRetry}>Try again</Button>
-    </div>
-  )
-}
+const TIMEOUT_HINT = 'This read has no time window to narrow. Try again in a moment.'
 
 /**
  * The queue of one organization right now: five delivery counts, the age of the oldest due delivery, and how long
@@ -66,7 +56,9 @@ export function QueuePage() {
 
       <section aria-labelledby="queue-snapshot" aria-busy={queue.loading}>
         <h2 id="queue-snapshot">Queue snapshot</h2>
-        {queue.error !== null ? <ErrorBanner error={queue.error} onRetry={queue.reload} /> : null}
+        {queue.error !== null ? (
+          <ErrorBanner error={queue.error} onRetry={queue.reload} timeoutHint={TIMEOUT_HINT} />
+        ) : null}
         {snapshot === null ? (
           queue.error === null ? (
             <LoadingState label="Loading the queue" />
@@ -107,7 +99,9 @@ export function QueuePage() {
 
       <section aria-labelledby="queue-age" aria-busy={age.loading}>
         <h2 id="queue-age">Overdue age of due deliveries</h2>
-        {age.error !== null ? <ErrorBanner error={age.error} onRetry={age.reload} /> : null}
+        {age.error !== null ? (
+          <ErrorBanner error={age.error} onRetry={age.reload} timeoutHint={TIMEOUT_HINT} />
+        ) : null}
         {age.data === null ? (
           age.error === null ? (
             <LoadingState label="Loading the overdue age" />

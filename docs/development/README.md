@@ -450,3 +450,34 @@ read-only, need `deliveries:read` and run under the API's five-second read deadl
 - **Time** is shown in UTC and labeled as such.
 - **Fetching** uses `useResource(scope, load)` (`web/src/lib/useResource.ts`): the scope is the organization id, a
   request is aborted when it changes or the page unmounts, and data of another scope is never shown.
+- **Activity** (`/o/:orgId/operations/activity`): `GET /operations/deliveries`, `GET /operations/failures` and
+  `GET /operations/attempts`. Three independent reads on open, each with its own loading and error state, and again
+  only when the user presses Refresh in that section. The summary is aggregate delivery counts (two cohorts: created
+  by current status, completed by completion time), never individual deliveries.
+- **Date ranges** are UTC, per section, applied with an explicit Apply (`web/src/lib/dateRange.ts`). With none
+  applied, no `from` or `to` is sent: the server chooses its own default (24 h for the summary and attempts, seven
+  days for failures) and the page reuses the window the server echoes for that query's continuation pages. The
+  browser's clock is never used to compute a default. A range the user applied is written to the URL and is reused
+  for every page and refresh.
+- **URL state** (`web/src/lib/activityQuery.ts`): filters and explicit ranges only, with one prefix per section
+  (`s`, `f`, `a`). A value that is not valid is ignored with a notice. A cursor is never stored in the URL.
+- **Pagination** (`web/src/lib/useCursorFeed.ts`): the hook stores the opaque cursors the server issues and sends one
+  only to continue the query that produced it. Previous returns to a held page without a request. A new filter or
+  Refresh drops every held page and starts from the first. The backend cursor is a position only and is not bound to
+  the filters, so this client-side rule is what keeps a cursor from being reused with other filters.
+- **Destination filter**: failures only, server-side (`destinationId`). The selector loads on request, 100 per page
+  by offset, merged by id. That is not a snapshot: destinations created or changed while paging can be missed or
+  repeated. Attempts have no destination filter (ADR 33), and rows are never filtered in the browser.
+- **Response checks** (`web/src/api/operationsParse.ts`) verify the fields the page reads. Unknown outcome or reason
+  values are shown as text. Delivery IDs are copyable text: links to a delivery page come with the delivery detail
+  phase.
+- **Show attempts** (`attemptWindowFor` in `web/src/lib/dateRange.ts`): the attempt window is anchored to the delivery,
+  not to the failure feed's range. It runs from the minute of `createdAt` to the next whole minute after `completedAt`,
+  which holds every attempt of the delivery (they all start between those two instants), including the episodes of a
+  redriven delivery. The attempt feed spans at most 31 days, so a longer lifetime is clamped to the 31 days that end at
+  the latest completion and the page says that older attempts are excluded. A truncated result is never presented as
+  the complete history. Only the delivery detail endpoint returns every attempt, and its page is a later phase.
+- **Ignored link values** are reported once and dropped from the URL when the user applies a section or presses "Clear
+  ignored filters" (`normalizedParams` in `web/src/lib/activityQuery.ts`).
+- **Unverified compatibility**: the API sends microsecond timestamps and the page reads them with `new Date`. This is
+  verified in Chromium only. Safari and Firefox have not been checked.

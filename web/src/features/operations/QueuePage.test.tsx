@@ -337,13 +337,13 @@ describe('navigation', () => {
       within(group)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['Queue'])
+    ).toEqual(['Queue', 'Activity'])
     // Only real links: no dead entries for pages that do not exist yet.
     expect(
       within(nav)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['Organizations', 'Overview', 'Queue'])
+    ).toEqual(['Organizations', 'Overview', 'Queue', 'Activity'])
     await user.click(within(group).getByRole('link', { name: 'Queue' }))
     expect(await screen.findByRole('heading', { name: 'Queue', level: 1 })).toBeInTheDocument()
   })

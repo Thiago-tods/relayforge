@@ -34,3 +34,16 @@ export function formatAge(seconds: number): string {
   const shown = parts.filter(([value]) => value > 0).map(([value, unit]) => `${value}${unit}`)
   return shown.length > 0 ? shown.join(' ') : '0s'
 }
+
+/**
+ * A rate between 0 and 1 as a percentage with one decimal. A rate that is not zero is never rounded to "0.0%", and
+ * one that is not total is never rounded to "100.0%": the rounding would hide that some deliveries did (or did not)
+ * fail.
+ */
+export function formatPercent(rate: number): string {
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1) return '—'
+  const percent = rate * 100
+  if (percent > 0 && percent < 0.1) return '< 0.1%'
+  if (percent < 100 && percent >= 99.95) return '> 99.9%'
+  return `${percent.toFixed(1)}%`
+}

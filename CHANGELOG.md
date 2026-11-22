@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F1b: delivery activity and feeds)
+
+- `web/`: the Activity page at `/o/:orgId/operations/activity` (sidebar entry "Activity" in the Operations group).
+  It reads `GET /operations/deliveries` (aggregate delivery counts), `GET /operations/failures` and
+  `GET /operations/attempts` (cursor-paged feeds) once on open and again only on Refresh; it never polls.
+- Each section has its own UTC date range and filters with an explicit Apply. Failures: reason and destination.
+  Attempts: outcome and delivery. Applied filters and explicit ranges live in the URL; cursors never do.
+- With no range applied the server picks its own default window: the browser sends no range, shows the window the
+  server echoes, and reuses it for the continuation pages of that query. Refresh asks for a fresh window.
+- Previous and Next use a stack of the cursors the server issued (never decoded or built in the browser). Changing
+  a filter or pressing Refresh starts again from the first page.
+- The failure feed has a destination selector that loads destinations on request, 100 at a time. Filtering is done
+  by the server (`destinationId`). The attempt feed has no destination filter because the backend has none.
+  Merging pages by id avoids duplicates but does not make the enumeration a snapshot.
+- Light response-shape validation of the new endpoints: a malformed body is an error state, not a crash. The
+  destination list keeps only id, name and status and never the URL.
+- "Show attempts" on a failure row filters the attempts to that delivery over the delivery's own lifetime: from the
+  minute it was created to the next whole minute after its latest failure, never the date range of the failure feed.
+  The attempt feed spans at most 31 days. A delivery older than that (for example one redriven weeks after its first
+  failure) gets the last 31 days and a visible warning that older attempts are excluded. The attempt section also says
+  it shows only the attempts that started inside its window. Delivery detail links remain a later phase.
+- Values of a link that were not valid are ignored with a notice, and are dropped from the URL when the user applies
+  any section or presses "Clear ignored filters".
+- A failure rate above zero is never shown as "0.0%" and one below total is never shown as "100.0%". The failure-reason
+  meanings are text in the page, not only a tooltip, and the pager live region exists before rows arrive.
+- Known limitation: timestamps from the API carry microseconds and are parsed with `new Date`. That is verified in
+  Chromium only. Safari and Firefox are not verified (the formatting helpers from F1a have the same dependency).
+- No backend change, no migration, no new dependency. Delivery detail links and redrive are a later phase.
+
 ### Added (Phase F1a: operations queue page)
 
 - `web/`: the queue page at `/o/:orgId/operations/queue` (sidebar group "Operations", one entry "Queue"). It reads
