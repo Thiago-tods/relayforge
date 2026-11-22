@@ -69,6 +69,9 @@ const (
 	PermSubscriptionsRead  Permission = "subscriptions:read"
 	PermSubscriptionsWrite Permission = "subscriptions:write" // create and revoke
 	PermDeliveriesRead     Permission = "deliveries:read"     // metadata and attempts, never payloads
+
+	// PermDeliveriesRedrive returns one FAILED delivery to the delivery pipeline (Phase 4.4.6, ADR 34).
+	PermDeliveriesRedrive Permission = "deliveries:redrive"
 )
 
 // destinationPermissions are held by OWNER and ADMIN.
@@ -81,6 +84,11 @@ func init() {
 	for _, p := range destinationPermissions {
 		permissions[RoleOwner][p] = true
 		permissions[RoleAdmin][p] = true
+	}
+	// Redrive re-sends a delivery the destination already refused or missed. OWNER, ADMIN and
+	// DEVELOPER may do it; VIEWER is read-only.
+	for _, r := range []Role{RoleOwner, RoleAdmin, RoleDeveloper} {
+		permissions[r][PermDeliveriesRedrive] = true
 	}
 	// Like endpoints: DEVELOPER may create, change, pause and subscribe, but rotating a
 	// secret breaks every receiver verifying the old one and revocation is permanent,

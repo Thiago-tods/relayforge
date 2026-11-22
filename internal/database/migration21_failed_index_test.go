@@ -26,9 +26,10 @@ func TestMigration21CreatesTheFailedIndexWithTheDocumentedDefinition(t *testing.
 			t.Errorf("%s: %+v", name, st)
 		}
 	}
-	// 00021 is the only migration this phase adds after 00020.
-	if n := f.env.Count(t, "SELECT count(*) FROM goose_db_version WHERE version_id >= 21 AND is_applied"); n != 1 {
-		t.Errorf("migrations at or above 21: %d, want exactly one", n)
+	// 00021 is the only migration of that phase: exactly one migration has version 21. (00022 is the redrive trigger
+	// of a later phase, tested in schema_delivery_redrive_test.go.)
+	if n := f.env.Count(t, "SELECT count(*) FROM goose_db_version WHERE version_id = 21 AND is_applied"); n != 1 {
+		t.Errorf("migrations with version 21: %d, want exactly one", n)
 	}
 }
 

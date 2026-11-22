@@ -60,7 +60,7 @@ status and reason disagree: `FAILED` without a valid reason, or any other status
 ### Where it is stored (migration 00019)
 
 - `deliveries.failure_reason`: non-NULL only while the delivery is `FAILED`.
-- `delivery_attempts.terminal_reason`: the same reason on the one attempt that ended the delivery. Earlier and
+- `delivery_attempts.terminal_reason`: the same reason on the attempt that ended the delivery (since redrive, ADR 34: the attempt that ended a failure episode). Earlier and
   successful attempts keep NULL.
 
 Both are nullable text with the same closed `CHECK` list (the same style as `delivery_attempts_outcome_valid`),
@@ -106,7 +106,9 @@ were recorded". The `NOT VALID` constraint is enforced for every row written fro
 
 ### Redrive readiness
 
-Nothing here implements redrive. The design leaves it room, and a future redrive (Phase 4.4.6) must respect these
+*Update: redrive is implemented in Phase 4.4.6 (ADR 34, migration 00022), and it follows every point below. The text is kept as it was written.*
+
+Nothing in this phase implements redrive. The design leaves it room, and a future redrive (Phase 4.4.6) must respect these
 points:
 
 - It must clear `deliveries.failure_reason` (and `completed_at`) in the same `UPDATE` that leaves `FAILED`: the

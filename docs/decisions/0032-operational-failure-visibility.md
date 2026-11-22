@@ -42,7 +42,7 @@ Query parameters, all optional: `limit` (1 to 100, default 50), `cursor`, `failu
 ```
 
 - **A current failure** is a delivery with `status = 'FAILED'` and a `completed_at` inside the window. A delivery that a
-  future redrive moves back out of `FAILED` (status, reason and completion time are cleared together, ADR 30) is no
+  future redrive (implemented later, ADR 34) moves back out of `FAILED` (status, reason and completion time are cleared together, ADR 30) is no
   longer a current failure and leaves the feed by itself; if it fails again it returns with its new completion time.
   A test simulates that row-level effect inside a rolled-back transaction.
 - **Window.** Half-open `[from, to)` on `completed_at`. The default is the **last seven days** and the longest is **31

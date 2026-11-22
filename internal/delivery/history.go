@@ -44,7 +44,7 @@ type AttemptView struct {
 	Outcome       string    `json:"outcome"`
 	HTTPStatus    *int      `json:"httpStatus,omitempty"`
 	ErrorClass    *string   `json:"errorClass,omitempty"`
-	// TerminalReason is set only on the attempt that ended the delivery as FAILED.
+	// TerminalReason is set only on an attempt that ended a failure episode (it made the delivery FAILED); a redriven delivery can have one per episode (ADR 34).
 	TerminalReason *string `json:"terminalReason,omitempty"`
 }
 

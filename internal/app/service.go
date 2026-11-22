@@ -17,6 +17,7 @@ import (
 	"github.com/Thiago-tods/relayforge/internal/audit"
 	"github.com/Thiago-tods/relayforge/internal/database"
 	"github.com/Thiago-tods/relayforge/internal/identity"
+	"github.com/Thiago-tods/relayforge/internal/observability"
 	"github.com/Thiago-tods/relayforge/internal/ratelimit"
 	"github.com/Thiago-tods/relayforge/internal/secretbox"
 	"github.com/Thiago-tods/relayforge/internal/tenancy"
@@ -37,6 +38,11 @@ type Config struct {
 	// OperationsDeadline bounds the database work of one operational read (ADR 31). Zero means the
 	// default of five seconds. Production leaves it unset; tests shorten it.
 	OperationsDeadline time.Duration
+	// RedriveLockTimeout bounds each lock wait of a redrive transaction (SET LOCAL lock_timeout, ADR 34).
+	// Zero means the default of five seconds. Production leaves it unset; tests shorten it.
+	RedriveLockTimeout time.Duration
+	// Redriven counts accepted redrives. It may be nil.
+	Redriven *observability.Counter
 }
 
 // DefaultConfig returns the documented defaults: 12 hour sessions, 7 day invitations.

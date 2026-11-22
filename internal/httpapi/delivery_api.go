@@ -30,9 +30,41 @@ func (a *API) registerDeliveryRoutes(mux *http.ServeMux) {
 	// DELETE revokes: the record stays as history (ADR 26).
 	mux.HandleFunc("DELETE "+sub+"/{subscriptionID}", a.handle(a.mutating(a.revokeSubscription)))
 
-	// Delivery history is read-only: there is deliberately no mutating route.
+	// Delivery history is read-only except for one controlled operation: redriving a single FAILED delivery
+	// (ADR 34). Nothing edits or deletes a delivery or an attempt.
 	mux.HandleFunc("GET "+org+"/deliveries", a.handle(a.authed(a.listDeliveries)))
 	mux.HandleFunc("GET "+org+"/deliveries/{deliveryID}", a.handle(a.authed(a.getDelivery)))
+	mux.HandleFunc("POST "+org+"/deliveries/{deliveryID}/redrive", a.handle(a.mutating(a.redriveDelivery)))
+}
+
+// redriveDelivery returns one FAILED delivery to the delivery pipeline. The body is read only after the
+// service has authorized the caller, so a caller who is not a member always gets 404, whatever the body says.
+func (a *API) redriveDelivery(w http.ResponseWriter, r *http.Request, p app.Principal) error {
+	res, err := a.svc.RedriveDelivery(r.Context(), p, r.PathValue("organizationID"), r.PathValue("deliveryID"),
+		func() (app.RedriveInput, error) {
+			var req struct {
+				Reason               string `json:"reason"`
+				ExpectedAttemptCount *int   `json:"expectedAttemptCount"`
+			}
+			if err := decode(w, r, &req); err != nil {
+				return app.RedriveInput{}, err
+			}
+			if req.ExpectedAttemptCount == nil {
+				return app.RedriveInput{}, app.Validation("expectedAttemptCount is required")
+			}
+			return app.RedriveInput{Reason: req.Reason, ExpectedAttemptCount: *req.ExpectedAttemptCount}, nil
+		})
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, map[string]any{
+		"delivery": res.Delivery,
+		"redrive": map[string]any{
+			"previousMaxAttempts":   res.PreviousMaxAttempts,
+			"maxAttempts":           res.Delivery.MaxAttempts,
+			"previousFailureReason": res.PreviousFailureReason,
+		},
+	})
 }
 
 // destinationJSON presents a destination. The URL is shown without its query

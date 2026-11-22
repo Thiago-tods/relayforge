@@ -53,6 +53,23 @@ func lockAndAuthorize(ctx context.Context, tx pgx.Tx, p Principal, orgID string,
 	return authorize(ctx, tx, p, orgID, perm)
 }
 
+// lockSharedAndAuthorize is lockAndAuthorize with a shared organization lock. It exists only for the
+// redrive flow (a test keeps it that way). The authorization guarantee is the same: the membership is
+// read after the lock is held, so a role change committed earlier is visible, and a later one cannot
+// commit until this transaction ends, because it needs the exclusive lock. See tenancy.LockOrganizationShared.
+func lockSharedAndAuthorize(ctx context.Context, tx pgx.Tx, p Principal, orgID string, perm tenancy.Permission) (tenancy.Membership, error) {
+	if !IsUUID(orgID) {
+		return tenancy.Membership{}, ErrNotFound
+	}
+	if err := tenancy.LockOrganizationShared(ctx, tx, orgID); err != nil {
+		if errors.Is(err, tenancy.ErrOrgNotFound) {
+			return tenancy.Membership{}, ErrNotFound
+		}
+		return tenancy.Membership{}, err
+	}
+	return authorize(ctx, tx, p, orgID, perm)
+}
+
 // CreateOrganization creates an organization owned by the principal.
 func (s *Service) CreateOrganization(ctx context.Context, p Principal, name, slug string) (tenancy.Organization, error) {
 	cleanName, err := tenancy.NormalizeName(name)

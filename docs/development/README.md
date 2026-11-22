@@ -187,7 +187,7 @@ createdByUserId, createdAt, revokedAt?}`. Event eligibility follows ADR 0026: an
 subscription if it was accepted inside `[createdAt, revokedAt)`. Re-subscribing creates a new record.
 Revoked endpoints and destinations cannot be subscribed (`409`); paused ones can.
 
-### Delivery history (read-only)
+### Delivery history (read-only, and one redrive operation)
 
 | Method and path | Purpose |
 |---|---|
@@ -204,8 +204,8 @@ Payloads, destination URLs, response bodies, raw error text and claim fields are
 
 #### Why a delivery failed (ADR 30)
 
-A `FAILED` delivery has a `failureReason`, and the attempt that ended it has the same value as `terminalReason`.
-Both are omitted when they do not apply: the delivery has not failed, the attempt was not the last one, or the
+A `FAILED` delivery has a `failureReason`, and the attempt that ended it (the latest failure episode, since redrive, ADR 34) has the same value as `terminalReason`.
+Both are omitted when they do not apply: the delivery has not failed, the attempt did not end a failure episode, or the
 delivery failed before reasons were recorded (migration 00019 does not backfill).
 
 | `failureReason` | Meaning | What to look at |
@@ -289,6 +289,7 @@ data).
 | `GET /api/v1/organizations/{organizationID}/operations/failures` | Current failures, newest completion first: `{generatedAt, from, to, items, nextCursor}` |
 | `GET /api/v1/organizations/{organizationID}/operations/queue/age` | Overdue-age distribution of due deliveries: `{generatedAt, buckets, capped}` |
 | `GET /api/v1/organizations/{organizationID}/deliveries?failureReason=` | The existing list, narrowed to one failure reason |
+| `GET /api/v1/organizations/{organizationID}/operations/attempts` | Recorded attempts across deliveries, newest start first: `{generatedAt, from, to, items, nextCursor}` (ADR 33) |
 
 - **Failure feed.** Optional `limit` (1 to 100, default 50), `cursor`, `failureReason`, `destinationId`, `from`, `to`.
   Order is `completed_at DESC, id DESC` with **keyset** pagination: pass the `nextCursor` of one page as the `cursor` of the
@@ -322,7 +323,54 @@ data).
   because query-plan tests showed the feed reading the whole window without it. It is expected to add one index entry per
   delivery that ends `FAILED`; that is an architectural estimate, and the write overhead was **not benchmarked**. The
   claim path keeps using `deliveries_due_idx`.
-- **Not yet available** (deferred): destination health, the cross-delivery attempt feed and time-series metrics.
+- **Not yet available** (deferred): destination health and time-series metrics.
+
+### Attempt activity feed (ADR 33)
+
+`GET /api/v1/organizations/{organizationID}/operations/attempts` lists the recorded delivery attempts of the organization,
+most recent start first. Same authentication, permission and `404`-before-validation rule as above; read-only, no
+migration and no new index.
+
+- **Parameters** (all optional): `limit` (1 to 100, default 50), `cursor`, `outcome` (`SUCCESS`, `HTTP_ERROR`, `REDIRECT`,
+  `NETWORK_ERROR`, `TIMEOUT`, `BLOCKED_BY_POLICY` or `ABANDONED`, upper case), `deliveryId` (a UUID), `from` and `to`.
+  There is **no `destinationId` filter** yet; an unknown parameter is ignored.
+- **Window.** `[from, to)` on `started_at`. The default is the **last 24 hours** and the longest is 31 days; the bounds follow
+  the same normalization as the other operational reads.
+- **Order and pagination.** `started_at DESC, id DESC`, keyset only: pass `nextCursor` as `cursor` for the next page; it is
+  `null` on the last page. The cursor is opaque, carries a position only and is not interchangeable with the failure feed's
+  (`400`). No offset and no total.
+- **Item fields** (stored, nothing derived): `attemptId, deliveryId, eventId, destinationId, destinationName,
+  attemptNumber, startedAt, finishedAt, durationMs, outcome`, and, when set, `httpStatus, errorClass, terminalReason`.
+  `ABANDONED` attempts are included: they mean a worker did not finish (lease expired, shutdown), not that the destination
+  failed.
+- **Consistency.** A page is one snapshot; across pages the feed is a live tail (a late-committing attempt can sort behind a
+  cursor). Start again from the first page for the newest attempts. The five-second deadline applies (`503
+  read_model_timeout`). A rare `outcome` filter can scan many index entries to fill a page; that is documented in ADR 33 and
+  was not measured at production scale.
+
+### Redrive a failed delivery (ADR 34)
+
+`POST /api/v1/organizations/{organizationId}/deliveries/{deliveryId}/redrive` returns **one** `FAILED` delivery to
+`PENDING`, due now, and raises its `maxAttempts` by five (capped at 50; a budget already at 50 is `409
+retry_budget_exhausted`). It needs the session cookie, the CSRF header and the permission `deliveries:redrive` (OWNER,
+ADMIN, DEVELOPER; not VIEWER). Body (strict JSON): `{"reason": "...", "expectedAttemptCount": 8}`. `reason` is required
+(1 to 500 printable characters, recorded in the audit event only) and `expectedAttemptCount` is the `attemptCount` you saw
+when you decided to redrive. Success is `200` with `{"delivery": {...}, "redrive": {"previousMaxAttempts",
+"maxAttempts", "previousFailureReason"}}` (`previousFailureReason` is `null` for a delivery that failed before reasons
+were recorded).
+
+- The delivery keeps its id, event, destination, `attemptCount` and every attempt row; the next attempt is number
+  `attemptCount + 1`. It is sent again by the normal worker, so a paused destination keeps it `PENDING` until it is
+  activated, and a revoked destination refuses the redrive (`409 destination_revoked`).
+- A repeated request is `409 delivery_not_failed` (there is no idempotency replay: read the delivery). A request that refers
+  to an earlier failure of a delivery that has failed again is `409 delivery_changed`. A missing, empty or altered stored
+  payload is `409 event_payload_unavailable`; a payload is never rebuilt.
+- Retries of a redriven delivery use the normal attempt-number backoff, which is long for high attempt numbers (about 2 h,
+  4 h, then 6 h between attempts 9 to 13). Receivers see the same delivery id again and must be idempotent.
+- A redriven delivery leaves the failure feed and the failed list until it fails again; the attempt feed shows the attempts
+  of every failure episode, and more than one attempt of a delivery can carry a `terminalReason`.
+- Metric: `relayforge_delivery_redriven_total`. Audit action: `delivery.redriven`.
+- Rollout order is migration 00022, then the delivery worker, then the API (ADR 34).
 
 ### Error codes
 
@@ -333,14 +381,16 @@ data).
 | 403 | `forbidden`, `csrf_invalid` | Missing permission, or missing CSRF token |
 | 404 | `not_found` | Missing resource, malformed id, or a resource or organization of another tenant |
 | 409 | `destination_revoked`, `destination_name_taken`, `already_subscribed`, `subscription_revoked`, `endpoint_revoked` | Lifecycle conflicts |
+| 409 | `delivery_not_failed`, `delivery_changed`, `retry_budget_exhausted`, `event_payload_unavailable` | Redrive conflicts (ADR 34) |
 | 413, 415 | `request_too_large`, `unsupported_media_type` | Body limits |
 | 503 | `read_model_timeout` | An operational read (queue, summary, failure feed, queue age, or a delivery list filtered by `failureReason`) exceeded its five-second deadline; use a shorter window |
+| 503 | `lock_timeout` | A redrive could not get its database lock within five seconds; nothing changed, retry (a `Retry-After` header is sent) |
 
 ### Permissions
 
 OWNER and ADMIN can do everything. DEVELOPER can read, create, rename, re-target, pause and activate
 destinations and manage subscriptions, but cannot rotate secrets or revoke destinations. VIEWER is read-only
-(destinations, subscriptions, deliveries). See ADR 0027.
+(destinations, subscriptions, deliveries). Redriving a failed delivery needs `deliveries:redrive`: OWNER, ADMIN and DEVELOPER, not VIEWER (ADR 0034). See ADR 0027.
 
 ### Testing this API locally
 
