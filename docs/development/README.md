@@ -435,3 +435,18 @@ request and a 403 always wins. `permissions.drift.test.ts` parses `role.go` and 
 
 **Checks.** `npm run format:check`, `lint`, `typecheck`, `test` and `build`. The tests stub `fetch`; they are not
 end-to-end evidence.
+
+## Operations pages (web/, Phase F1)
+
+The operations pages read the operational read models (ADR 31 to 33) and show them without adding to them. All are
+read-only, need `deliveries:read` and run under the API's five-second read deadline.
+
+- **Queue** (`/o/:orgId/operations/queue`): `GET /operations/queue` and `GET /operations/queue/age`. Two independent
+  reads, made once on open and again only when the user presses Refresh. Nothing polls.
+- **Counts are delivery counts.** A count of 100,000 or more is saturated and is displayed as "≥ 100,000" (a lower
+  bound), decided from the count itself (`web/src/lib/format.ts`), not from the response-level `capped` flag.
+- **Wording** (`web/src/features/operations/queueLabels.ts`) repeats what the backend counts and nothing stronger.
+  The page never calls a queue "healthy" or "stuck": the API has no such notion.
+- **Time** is shown in UTC and labeled as such.
+- **Fetching** uses `useResource(scope, load)` (`web/src/lib/useResource.ts`): the scope is the organization id, a
+  request is aborted when it changes or the page unmounts, and data of another scope is never shown.

@@ -1,4 +1,5 @@
 import { vi } from 'vitest'
+import type { QueueAge, QueueSnapshot } from '../api/operationsTypes'
 import type { OrganizationWithRole, User } from '../api/types'
 
 // Tests use a stubbed fetch. Nothing here talks to a real backend, so these tests are not end-to-end evidence.
@@ -9,6 +10,8 @@ export interface Recorded {
   headers: Headers
   credentials: RequestCredentials | undefined
   body: unknown
+  /** The abort signal of the request, so a test can check that an obsolete request was cancelled. */
+  signal: AbortSignal | null | undefined
 }
 
 export type Handler = (call: Recorded) => Response | Promise<Response>
@@ -25,6 +28,7 @@ export function stubFetch(handler: Handler): Recorded[] {
         headers: new Headers(init.headers),
         credentials: init.credentials,
         body: typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined,
+        signal: init.signal,
       }
       calls.push(call)
       return handler(call)
@@ -76,6 +80,45 @@ export function org(
     role,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
+  }
+}
+
+/** The labels and ranges of the seven fixed queue-age buckets (internal/delivery/queue_age.go). */
+const AGE_BUCKETS: [string, number, number | null][] = [
+  ['<1m', 0, 60],
+  ['1-5m', 60, 300],
+  ['5-15m', 300, 900],
+  ['15-60m', 900, 3600],
+  ['1-6h', 3600, 21600],
+  ['6-24h', 21600, 86400],
+  ['>24h', 86400, null],
+]
+
+export function queueSnapshot(over: Partial<QueueSnapshot> = {}): QueueSnapshot {
+  return {
+    generatedAt: '2026-11-22T17:27:03Z',
+    pending: 12,
+    due: 9,
+    delayed: 3,
+    oldestDueAgeSeconds: 3661,
+    inFlight: 4,
+    expiredLeases: 1,
+    capped: false,
+    ...over,
+  }
+}
+
+/** A queue-age response with one count per bucket, in the API's bucket order. */
+export function queueAge(counts: number[] = [5, 2, 1, 0, 1, 0, 0], capped = false): QueueAge {
+  return {
+    generatedAt: '2026-11-22T17:27:04Z',
+    buckets: AGE_BUCKETS.map(([label, minSeconds, maxSeconds], i) => ({
+      label,
+      minSeconds,
+      maxSeconds,
+      count: counts[i] ?? 0,
+    })),
+    capped,
   }
 }
 
