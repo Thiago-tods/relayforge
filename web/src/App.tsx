@@ -1,41 +1,17 @@
-import { NavLink, Route, Routes } from 'react-router-dom'
+import { AppRoutes } from './app/AppRoutes'
+import { ThemeProvider } from './app/theme'
+import { AuthProvider } from './auth/AuthProvider'
+import { ToastProvider } from './ui/toast'
 
-function Home() {
-  return (
-    <section>
-      <h1>Welcome to RelayForge</h1>
-      <p>Reliable webhook infrastructure. Features will appear here as they are built.</p>
-    </section>
-  )
-}
-
-function NotFound() {
-  return (
-    <section>
-      <h1>Page not found</h1>
-      <p>The page you requested does not exist.</p>
-    </section>
-  )
-}
-
+/** Providers and routes. The router itself is supplied by the caller (BrowserRouter, or MemoryRouter in tests). */
 export function App() {
   return (
-    <div className="shell">
-      <header className="shell-header">
-        <span className="brand">RelayForge</span>
-        <nav aria-label="Main navigation">
-          <NavLink to="/" end>
-            Home
-          </NavLink>
-        </nav>
-      </header>
-      <main className="shell-main">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </main>
-      <footer className="shell-footer">RelayForge &middot; Phase 0 foundation</footer>
-    </div>
+    <ThemeProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </ToastProvider>
+    </ThemeProvider>
   )
 }

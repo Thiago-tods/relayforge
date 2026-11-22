@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F0: frontend foundation)
+
+- `web/`: application shell (sidebar that becomes a drawer on narrow screens, top bar with organization switcher,
+  theme switch and sign-out), light and dark themes, toasts, and sign-in, registration and organization pages that
+  use the real API. A same-origin API client with a Vite development proxy to `http://[::1]:8080`.
+- CSRF handling per ADR 10: in-memory token, lazy fetch after a reload, one rotation and one retry on `csrf_invalid`,
+  single-flight rotation, an identity re-check after rotation and cross-tab sign-in and sign-out signals.
+- A client copy of the role-to-permission matrix with a test that fails when it differs from `internal/tenancy/role.go`.
+- No backend change, no new dependency. Operations, deliveries, destinations, events and access management are later phases.
+
 ### Added (Phase 4.4.6: delivery redrive)
 
 - `POST /api/v1/organizations/{organizationID}/deliveries/{deliveryID}/redrive` (ADR 34): returns one `FAILED` delivery to
