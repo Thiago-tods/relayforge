@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { COUNT_CAP, formatAge, formatCount, formatUtc, isCapped } from './format'
+import { COUNT_CAP, formatAge, formatCount, formatPercent, formatUtc, isCapped } from './format'
 
 describe('formatCount', () => {
   it('shows counts below the cap exactly', () => {
@@ -44,5 +44,36 @@ describe('formatUtc', () => {
 
   it('shows a dash for text that is not a timestamp', () => {
     expect(formatUtc('not a time')).toBe('—')
+  })
+})
+
+describe('formatPercent', () => {
+  it('shows an ordinary rate with one decimal', () => {
+    expect(formatPercent(1 / 6)).toBe('16.7%')
+    expect(formatPercent(0.5)).toBe('50.0%')
+    expect(formatPercent(0.001)).toBe('0.1%')
+  })
+
+  it('shows zero and a total rate exactly', () => {
+    expect(formatPercent(0)).toBe('0.0%')
+    expect(formatPercent(1)).toBe('100.0%')
+  })
+
+  it('never rounds a rate that is not zero down to 0.0%', () => {
+    // 1 failed in 99,999 succeeded is about 0.001%.
+    expect(formatPercent(1 / 100_000)).toBe('< 0.1%')
+    expect(formatPercent(0.00049)).toBe('< 0.1%')
+  })
+
+  it('never rounds a rate that is not total up to 100.0%', () => {
+    expect(formatPercent(0.99999)).toBe('> 99.9%')
+    expect(formatPercent(0.9996)).toBe('> 99.9%')
+    expect(formatPercent(0.9994)).toBe('99.9%')
+  })
+
+  it('shows a dash for a value that is not a rate', () => {
+    expect(formatPercent(Number.NaN)).toBe('—')
+    expect(formatPercent(-0.1)).toBe('—')
+    expect(formatPercent(1.5)).toBe('—')
   })
 })

@@ -123,6 +123,7 @@ export function Shell() {
                 Operations
               </p>
               <NavLink to={`/o/${orgId}/operations/queue`}>Queue</NavLink>
+              <NavLink to={`/o/${orgId}/operations/activity`}>Activity</NavLink>
             </div>
           ) : null}
         </nav>

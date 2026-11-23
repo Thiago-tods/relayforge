@@ -43,7 +43,12 @@ export function fakeChannel(): FakeChannel {
 // eslint-disable-next-line react-refresh/only-export-components -- a test helper, not a hot-reloaded module
 function Where() {
   const location = useLocation()
-  return <output data-testid="location">{location.pathname}</output>
+  return (
+    <>
+      <output data-testid="location">{location.pathname}</output>
+      <output data-testid="search">{location.search}</output>
+    </>
+  )
 }
 
 export function renderApp(path: string) {
