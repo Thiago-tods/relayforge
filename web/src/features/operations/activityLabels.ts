@@ -42,6 +42,15 @@ export function truncatedAttemptsWarning(createdAt: string): string {
 export const FEED_FRESHNESS_NOTE =
   'A page is one snapshot. Rows that finish late can be missing from later pages. Press Refresh to start again from the newest rows.'
 
+export const AUTO_REFRESH_NOTE =
+  'This page refreshes itself every 15 seconds while this tab is visible, and again when you come back to it. Each section is read independently.'
+
+export const NEW_ACTIVITY_NOTE =
+  'New activity is available. Nothing was reloaded: this page, your filters and your position are unchanged.'
+
+export const NEW_ACTIVITY_CHECK_FAILED =
+  'Could not check for new activity. The rows below are unchanged, and the next check runs automatically.'
+
 export const DEFAULT_WINDOW_HINT =
   'Times are read as UTC. Leave both empty to use the default window.'
 

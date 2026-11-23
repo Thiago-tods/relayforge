@@ -100,7 +100,7 @@ describe('queue page', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('requests each endpoint once on open, never polls, and refreshes only on demand', async () => {
+  it('requests each endpoint on open and refreshes on demand (the schedule is tested in liveRefresh.test.tsx)', async () => {
     const { calls, user } = open({
       [queuePath('o1')]: () => json(200, queueSnapshot()),
       [agePath('o1')]: () => json(200, queueAge()),

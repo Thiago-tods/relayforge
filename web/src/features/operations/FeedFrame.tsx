@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import type { CursorFeed } from '../../lib/useCursorFeed'
+import type { NewActivity } from '../../lib/useNewActivity'
 import { Button } from '../../ui/Button'
 import { DateTime } from '../../ui/DateTime'
 import { Pager } from '../../ui/Pager'
 import { LoadingState } from '../../ui/states'
-import { FEED_FRESHNESS_NOTE } from './activityLabels'
+import { FEED_FRESHNESS_NOTE, NEW_ACTIVITY_CHECK_FAILED, NEW_ACTIVITY_NOTE } from './activityLabels'
 import { ErrorBanner } from './ErrorBanner'
 
 /**
@@ -18,6 +19,7 @@ export function FeedFrame<T>({
   intro,
   filters,
   feed,
+  newActivity,
   emptyText,
   timeoutHint,
   children,
@@ -28,6 +30,8 @@ export function FeedFrame<T>({
   intro: ReactNode
   filters: ReactNode
   feed: CursorFeed<T>
+  /** What the periodic check for newer entries found. Reloading is always the user's choice. */
+  newActivity: NewActivity
   emptyText: string
   timeoutHint: string
   children: (items: T[]) => ReactNode
@@ -58,6 +62,17 @@ export function FeedFrame<T>({
       <p role="status" className="visually-hidden">
         {page === null ? '' : `Page ${feed.pageNumber} loaded, ${page.items.length} rows.`}
       </p>
+      <p role="status" className="visually-hidden">
+        {newActivity.available ? NEW_ACTIVITY_NOTE : ''}
+      </p>
+      {newActivity.available ? (
+        <div className="notice new-activity">
+          <p>New activity available.</p>
+          <Button onClick={feed.refresh}>Show newest</Button>
+        </div>
+      ) : newActivity.failed ? (
+        <p className="notice">{NEW_ACTIVITY_CHECK_FAILED}</p>
+      ) : null}
       <p className="muted">{intro}</p>
       {filters}
       {feed.error !== null ? (

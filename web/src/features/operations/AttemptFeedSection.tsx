@@ -7,6 +7,7 @@ import { checkRange, toInputValue } from '../../lib/dateRange'
 import type { RangeErrors } from '../../lib/dateRange'
 import { useCursorFeed } from '../../lib/useCursorFeed'
 import { useDraft } from '../../lib/useDraft'
+import { useNewActivity } from '../../lib/useNewActivity'
 import { useOrg } from '../../org/orgContext'
 import { CopyText } from '../../ui/CopyText'
 import { DateTime } from '../../ui/DateTime'
@@ -83,6 +84,27 @@ export function AttemptFeedSection({
     ),
   )
 
+  // Checks for newer attempts without touching the pages held, the cursors or the position (see the failure feed).
+  const newActivity = useNewActivity({
+    base: `${orgId}|${appliedKey}`,
+    first: feed.firstPage,
+    busy: feed.loading,
+    probe: (signal) =>
+      getAttempts(
+        orgId,
+        {
+          limit: 1,
+          outcome: applied.outcome,
+          deliveryId: applied.deliveryId,
+          from: applied.range?.from,
+          to: applied.range?.to,
+        },
+        signal,
+      ),
+    id: (item) => item.attemptId,
+    time: (item) => item.startedAt,
+  })
+
   function submit(next: AttemptFilters) {
     if (filtersKey(next) === appliedKey) feed.refresh()
     else onApply(next)
@@ -118,6 +140,7 @@ export function AttemptFeedSection({
         </>
       }
       feed={feed}
+      newActivity={newActivity}
       emptyText="No attempts match these filters in this window."
       timeoutHint={FEED_TIMEOUT_HINT}
       filters={

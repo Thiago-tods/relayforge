@@ -442,7 +442,8 @@ The operations pages read the operational read models (ADR 31 to 33) and show th
 read-only, need `deliveries:read` and run under the API's five-second read deadline.
 
 - **Queue** (`/o/:orgId/operations/queue`): `GET /operations/queue` and `GET /operations/queue/age`. Two independent
-  reads, made once on open and again only when the user presses Refresh. Nothing polls.
+  reads, made on open, every 15 seconds while the tab is visible, and when the user presses Refresh (see
+  **Scheduled refresh** below).
 - **Counts are delivery counts.** A count of 100,000 or more is saturated and is displayed as "≥ 100,000" (a lower
   bound), decided from the count itself (`web/src/lib/format.ts`), not from the response-level `capped` flag.
 - **Wording** (`web/src/features/operations/queueLabels.ts`) repeats what the backend counts and nothing stronger.
@@ -451,8 +452,8 @@ read-only, need `deliveries:read` and run under the API's five-second read deadl
 - **Fetching** uses `useResource(scope, load)` (`web/src/lib/useResource.ts`): the scope is the organization id, a
   request is aborted when it changes or the page unmounts, and data of another scope is never shown.
 - **Activity** (`/o/:orgId/operations/activity`): `GET /operations/deliveries`, `GET /operations/failures` and
-  `GET /operations/attempts`. Three independent reads on open, each with its own loading and error state, and again
-  only when the user presses Refresh in that section. The summary is aggregate delivery counts (two cohorts: created
+  `GET /operations/attempts`. Three independent reads on open, each with its own loading and error state, scheduled as
+  described under **Scheduled refresh**, and again when the user presses Refresh in that section. The summary is aggregate delivery counts (two cohorts: created
   by current status, completed by completion time), never individual deliveries.
 - **Date ranges** are UTC, per section, applied with an explicit Apply (`web/src/lib/dateRange.ts`). With none
   applied, no `from` or `to` is sent: the server chooses its own default (24 h for the summary and attempts, seven
@@ -471,6 +472,21 @@ read-only, need `deliveries:read` and run under the API's five-second read deadl
 - **Response checks** (`web/src/api/operationsParse.ts`) verify the fields the page reads. Unknown outcome or reason
   values are shown as text. Delivery IDs are copyable text: links to a delivery page come with the delivery detail
   phase.
+- **Scheduled refresh** (Phase F1d; `web/src/lib/useAutoRefresh.ts`, `useLiveResource.ts`, `useNewActivity.ts`): the Queue
+  snapshot, the queue age and the Activity summary reload themselves every 15 seconds, each on its own schedule. The
+  first read is made on entry. The timer is chained: it is armed only after the previous request settles, so a resource
+  never has two requests at once and a tick that falls while a request runs is dropped, never queued. Nothing is
+  scheduled while the tab is hidden; when it becomes visible again each section refreshes at once (unless it is
+  already loading). Requests are aborted on unmount and when the organization changes, and the Refresh button still
+  works and replaces a running scheduled request. A scheduled reload over data already shown does not look busy, and a
+  failed one keeps the data and shows a non-blocking notice; with nothing to show yet the error still blocks.
+- **Feeds are never replaced by a schedule.** The failure and attempt feeds only check, on the same schedule, for
+  newer entries: they read the newest entry of the same query (limit 1, no cursor, the applied filters and range, and
+  no window when none is applied so the server picks its default). If it is not held on the first page and is not
+  older than the newest held entry, a "New activity available" notice offers "Show newest", which is a normal Refresh
+  back to page 1. The held pages, server cursors, filters, ranges and position are never reset by the check. A failed
+  check says so and leaves the rows alone. Limitation: the check looks at the single newest entry, so it only says that
+  something newer exists, not how much.
 - **Show attempts** (`attemptWindowFor` in `web/src/lib/dateRange.ts`): the attempt window is anchored to the delivery,
   not to the failure feed's range. It runs from the minute of `createdAt` to the next whole minute after `completedAt`,
   which holds every attempt of the delivery (they all start between those two instants), including the episodes of a

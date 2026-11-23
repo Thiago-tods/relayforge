@@ -8,6 +8,7 @@ import { checkRange, toInputValue } from '../../lib/dateRange'
 import type { RangeErrors } from '../../lib/dateRange'
 import { useCursorFeed } from '../../lib/useCursorFeed'
 import { useDraft } from '../../lib/useDraft'
+import { useNewActivity } from '../../lib/useNewActivity'
 import { useOrg } from '../../org/orgContext'
 import { Button } from '../../ui/Button'
 import { CopyText } from '../../ui/CopyText'
@@ -82,6 +83,28 @@ export function FailureFeedSection({
     ),
   )
 
+  // Checks for newer failures without touching the pages held, the cursors or the position. The newest entry of the
+  // same query is read with no cursor, and with no window unless a range is applied, so the server picks the default.
+  const newActivity = useNewActivity({
+    base: `${orgId}|${appliedKey}`,
+    first: feed.firstPage,
+    busy: feed.loading,
+    probe: (signal) =>
+      getFailures(
+        orgId,
+        {
+          limit: 1,
+          failureReason: applied.reason,
+          destinationId: applied.destinationId,
+          from: applied.range?.from,
+          to: applied.range?.to,
+        },
+        signal,
+      ),
+    id: (item) => item.deliveryId,
+    time: (item) => item.completedAt,
+  })
+
   function submit(next: FailureFilters) {
     if (filtersKey(next) === appliedKey) feed.refresh()
     else onApply(next)
@@ -110,6 +133,7 @@ export function FailureFeedSection({
       title="Recent failures"
       intro={FAILURES_INTRO}
       feed={feed}
+      newActivity={newActivity}
       emptyText="No failed deliveries match these filters in this window."
       timeoutHint={FEED_TIMEOUT_HINT}
       filters={

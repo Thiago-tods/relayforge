@@ -6,7 +6,7 @@ import type { AttemptFilters, FailureFilters, SummaryFilters } from '../../lib/a
 import { attemptWindowFor } from '../../lib/dateRange'
 import type { UtcRange } from '../../lib/dateRange'
 import { Button } from '../../ui/Button'
-import { truncatedAttemptsWarning } from './activityLabels'
+import { AUTO_REFRESH_NOTE, truncatedAttemptsWarning } from './activityLabels'
 import { ATTEMPTS_HEADING_ID, AttemptFeedSection } from './AttemptFeedSection'
 import { DeliverySummarySection } from './DeliverySummarySection'
 import { FailureFeedSection } from './FailureFeedSection'
@@ -23,7 +23,9 @@ interface CrossLink {
 /**
  * Delivery activity of one organization: an aggregate summary and two cursor-paged feeds, each with its own filters,
  * date range, loading state and error state. Applied filters live in the URL; cursors and the default window the
- * server chose never do. Every read is made on open and again only when the user asks. Nothing here polls.
+ * server chose never do. Each section reads on open, every 15 seconds while the tab is visible, and when the user
+ * asks. The summary reloads in place. The feeds only check for newer entries and offer them: a page the user is
+ * reading, its filters and its cursors are never replaced or reset by a scheduled read.
  */
 export function ActivityPage() {
   const [params, setParams] = useSearchParams()
@@ -89,7 +91,7 @@ export function ActivityPage() {
         <h1>Activity</h1>
         <p>
           Delivery counts, recent failures and recorded attempts. Each section has its own date
-          range and filters, and is read only when this page opens or you press Refresh.
+          range and filters. {AUTO_REFRESH_NOTE}
         </p>
       </header>
       {query.ignored ? (

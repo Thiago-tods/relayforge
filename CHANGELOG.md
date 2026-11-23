@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 - `web/`: the Activity page at `/o/:orgId/operations/activity` (sidebar entry "Activity" in the Operations group).
   It reads `GET /operations/deliveries` (aggregate delivery counts), `GET /operations/failures` and
-  `GET /operations/attempts` (cursor-paged feeds) once on open and again only on Refresh; it never polls.
+  `GET /operations/attempts` (cursor-paged feeds) once on open and again on Refresh (Phase F1d later added scheduled refresh).
 - Each section has its own UTC date range and filters with an explicit Apply. Failures: reason and destination.
   Attempts: outcome and delivery. Applied filters and explicit ranges live in the URL; cursors never do.
 - With no range applied the server picks its own default window: the browser sends no range, shows the window the
@@ -35,6 +35,19 @@ adheres to [Semantic Versioning](https://semver.org/).
   Chromium only. Safari and Firefox are not verified (the formatting helpers from F1a have the same dependency).
 - No backend change, no migration, no new dependency. Delivery detail links and redrive are a later phase.
 
+### Added (Phase F1d: scheduled refresh of the operations pages)
+
+- `web/`: the Queue and Activity pages refresh on their own every 15 seconds while the browser tab is visible. The first
+  read is on entry, a hidden tab schedules nothing and refreshes at once when it is visible again, and Refresh still
+  works. The queue snapshot, the queue age and the Activity summary each have their own schedule; a resource never has
+  two requests at once and missed ticks are dropped, not queued. Requests are cancelled on unmount and on an
+  organization change.
+- A failed scheduled refresh keeps the data shown and says so in a notice that does not block anything.
+- The Activity feeds are not replaced by a schedule: they check for a newer entry and offer "Show newest" in a "New
+  activity available" notice. The page, filters, date range, cursors and position are never reset automatically.
+- Rolling windows stay server-authoritative: no date is sent unless the user applied a range.
+- Frontend only: no backend change, no migration, no new dependency, no worker, retry, lease or recovery change.
+
 ### Added (Phase F1c: delivery detail)
 
 - `web/`: the delivery detail page at `/o/:orgId/operations/deliveries/:deliveryId`, using the existing read-only delivery
@@ -45,7 +58,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 ### Added (Phase F1a: operations queue page)
 
 - `web/`: the queue page at `/o/:orgId/operations/queue` (sidebar group "Operations", one entry "Queue"). It reads
-  `GET /operations/queue` and `GET /operations/queue/age` once on open and again only on Refresh; it never polls.
+  `GET /operations/queue` and `GET /operations/queue/age` once on open and again on Refresh (Phase F1d later added scheduled refresh).
 - Delivery counts (pending, due, delayed, in flight, expired leases) and the oldest due age use the backend's own
   definitions. A count that reaches 100,000 is shown as "≥ 100,000", decided per count and never as an exact value.
   The overdue-age distribution is shown exactly as returned: seven fixed buckets, no percentiles.

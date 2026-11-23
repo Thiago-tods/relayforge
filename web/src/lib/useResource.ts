@@ -17,8 +17,15 @@ export interface Resource<T> {
   error: unknown
   /** True from the start of a request until it settles. */
   loading: boolean
-  /** Starts a new request. The previous one is aborted and its answer is ignored. */
+  /**
+   * True while a scheduled (quiet) reload runs over data that is already shown. Nothing should look busy then: the
+   * user did not ask for it and the shown data stays valid until the new answer arrives.
+   */
+  background: boolean
+  /** Starts a new request on behalf of the user. The previous one is aborted and its answer is ignored. */
   reload: () => void
+  /** Starts a new request on a schedule. Same as `reload`, but it is reported as `background`. */
+  reloadQuietly: () => void
 }
 
 /**
@@ -33,9 +40,9 @@ export function useResource<T>(
   scope: string,
   load: (signal: AbortSignal) => Promise<T>,
 ): Resource<T> {
-  const [attempt, setAttempt] = useState(0)
+  const [reloads, setReloads] = useState({ count: 0, quiet: false })
   const [settled, setSettled] = useState<Settled<T> | null>(null)
-  const key = `${scope}#${attempt}`
+  const key = `${scope}#${reloads.count}`
 
   // The effect event always calls the latest `load` without making it a dependency of the effect.
   const run = useEffectEvent((signal: AbortSignal) => load(signal))
@@ -60,12 +67,20 @@ export function useResource<T>(
     return () => controller.abort()
   }, [scope, key])
 
-  const reload = useCallback(() => setAttempt((n) => n + 1), [])
+  const reload = useCallback(() => setReloads((r) => ({ count: r.count + 1, quiet: false })), [])
+  const reloadQuietly = useCallback(
+    () => setReloads((r) => ({ count: r.count + 1, quiet: true })),
+    [],
+  )
   const sameScope = settled !== null && settled.scope === scope
+  const data = sameScope ? settled.data : null
+  const loading = settled?.key !== key
   return {
-    data: sameScope ? settled.data : null,
+    data,
     error: settled !== null && settled.key === key ? settled.error : null,
-    loading: settled?.key !== key,
+    loading,
+    background: loading && reloads.quiet && data !== null,
     reload,
+    reloadQuietly,
   }
 }

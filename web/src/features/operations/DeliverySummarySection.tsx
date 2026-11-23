@@ -7,7 +7,7 @@ import { checkRange, toInputValue } from '../../lib/dateRange'
 import type { RangeErrors } from '../../lib/dateRange'
 import { formatPercent, isCapped } from '../../lib/format'
 import { useDraft } from '../../lib/useDraft'
-import { useResource } from '../../lib/useResource'
+import { useLiveResource } from '../../lib/useLiveResource'
 import { useOrg } from '../../org/orgContext'
 import { Button } from '../../ui/Button'
 import { Count } from '../../ui/Count'
@@ -28,6 +28,7 @@ import {
 } from './activityLabels'
 import { ErrorBanner } from './ErrorBanner'
 import { FilterForm, RangeFields } from './FilterForm'
+import { RefreshStatus } from './RefreshStatus'
 
 function everyCount(summary: DeliverySummary): number[] {
   const { created, completed } = summary
@@ -52,7 +53,8 @@ const CREATED_CARDS = [
 /**
  * The delivery summary of one window (GET /operations/deliveries): aggregate delivery counts only, never individual
  * deliveries. With no range applied, the server's own default window is requested and the page shows the window
- * the server echoes. The browser's clock is never used to compute it.
+ * the server echoes. The browser's clock is never used to compute it. The section reloads itself every 15 seconds while
+ * the tab is visible; a rolling window therefore moves with the server's clock, and an explicit range is reused as is.
  */
 export function DeliverySummarySection({
   applied,
@@ -63,7 +65,7 @@ export function DeliverySummarySection({
 }) {
   const orgId = useOrg().organization.id
   const appliedKey = filtersKey(applied)
-  const summary = useResource(`${orgId}|${appliedKey}`, (signal) =>
+  const summary = useLiveResource(`${orgId}|${appliedKey}`, (signal) =>
     getDeliverySummary(orgId, applied.range ?? {}, signal),
   )
   const [draft, setDraft] = useDraft(
@@ -91,14 +93,16 @@ export function DeliverySummarySection({
   }
 
   const data = summary.data
+  // A scheduled reload over data that is already shown does not look busy: only the first read and a manual one do.
+  const busy = summary.loading && !summary.background
   const capped = data !== null && (data.capped || everyCount(data).some(isCapped))
 
   return (
-    <section aria-labelledby="activity-summary-heading" aria-busy={summary.loading}>
+    <section aria-labelledby="activity-summary-heading" aria-busy={busy}>
       <div className="section-head">
         <h2 id="activity-summary-heading">Delivery summary</h2>
-        <Button busy={summary.loading} onClick={summary.reload}>
-          {summary.loading ? 'Loading…' : 'Refresh'}
+        <Button busy={busy} onClick={summary.reload}>
+          {busy ? 'Loading…' : 'Refresh'}
         </Button>
       </div>
       <p className="muted">
@@ -123,13 +127,14 @@ export function DeliverySummarySection({
         />
       </FilterForm>
 
-      {summary.error !== null ? (
+      {summary.error !== null && data === null ? (
         <ErrorBanner
           error={summary.error}
           onRetry={summary.reload}
           timeoutHint={SUMMARY_TIMEOUT_HINT}
         />
       ) : null}
+      <RefreshStatus error={summary.error} hasData={data !== null} />
       {data === null ? (
         summary.error === null ? (
           <LoadingState label="Loading the delivery summary" />

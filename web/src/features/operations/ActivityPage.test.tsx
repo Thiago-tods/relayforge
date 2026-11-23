@@ -108,7 +108,7 @@ const failure = (i: number) =>
   })
 
 describe('opening the page', () => {
-  it('makes exactly three reads, asks the server for its default windows, and never polls', async () => {
+  it('makes exactly three reads on open and asks the server for its default windows (the schedule is tested in liveRefresh.test.tsx)', async () => {
     const { calls } = open()
     await loaded()
     await new Promise((resolve) => setTimeout(resolve, 100))

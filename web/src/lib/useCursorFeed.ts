@@ -35,6 +35,8 @@ interface Request {
 export interface CursorFeed<T> {
   /** The page being shown, or null before the first page of this query has loaded. */
   page: FeedPage<T> | null
+  /** The first page of the current run, however far the user has paged (null before it has loaded). */
+  firstPage: FeedPage<T> | null
   /** 1-based number of the page being shown (0 when none). */
   pageNumber: number
   /** True while a request runs. A page that is already shown stays visible meanwhile. */
@@ -136,6 +138,7 @@ export function useCursorFeed<T>(
 
   return {
     page,
+    firstPage: shown !== null ? (shown.pages[0] ?? null) : null,
     pageNumber: page === null || shown === null ? 0 : shown.index + 1,
     loading: !settled,
     error: settled ? run.error : null,
