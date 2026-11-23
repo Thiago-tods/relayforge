@@ -35,6 +35,13 @@ adheres to [Semantic Versioning](https://semver.org/).
   Chromium only. Safari and Firefox are not verified (the formatting helpers from F1a have the same dependency).
 - No backend change, no migration, no new dependency. Delivery detail links and redrive are a later phase.
 
+### Added (Phase F1c: delivery detail)
+
+- `web/`: the delivery detail page at `/o/:orgId/operations/deliveries/:deliveryId`, using the existing read-only delivery
+  history endpoint. It shows delivery metadata and the bounded attempt history returned by the API, newest first, with
+  failure episodes separated only by stored terminal markers. Delivery IDs in the failure and attempt feeds link to it.
+- No redrive controls, no backend change, no migration and no new dependency.
+
 ### Added (Phase F1a: operations queue page)
 
 - `web/`: the queue page at `/o/:orgId/operations/queue` (sidebar group "Operations", one entry "Queue"). It reads

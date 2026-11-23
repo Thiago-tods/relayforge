@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { getAttempts } from '../../api/operations'
 import { filtersKey, normalizeUuid } from '../../lib/activityQuery'
 import type { AttemptFilters } from '../../lib/activityQuery'
@@ -198,7 +199,14 @@ export function AttemptFeedSection({
                 </td>
                 <td className="num">#{item.attemptNumber}</td>
                 <td>
-                  <CopyText value={item.deliveryId} what="Delivery ID" />
+                  <span className="delivery-cell">
+                    <CopyText value={item.deliveryId} what="Delivery ID" />
+                    <Link
+                      to={`/o/${orgId}/operations/deliveries/${encodeURIComponent(item.deliveryId)}`}
+                    >
+                      View
+                    </Link>
+                  </span>
                 </td>
                 <td className="wrap">{item.destinationName}</td>
                 <td>

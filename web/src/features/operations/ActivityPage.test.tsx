@@ -133,6 +133,29 @@ describe('opening the page', () => {
     expect(container.textContent ?? '').not.toMatch(/\b(stuck|healthy|unhealthy|dead)\b/i)
   })
 
+  it('links delivery IDs in both feeds to the organization-scoped detail route', async () => {
+    open()
+    const failures = await screen.findByRole('table', {
+      name: 'Failed deliveries, newest completion first',
+    })
+    const attempts = await screen.findByRole('table', {
+      name: 'Recorded attempts, newest start first',
+    })
+    const failureRow = within(failures).getAllByRole('row')[1]!
+    const attemptRow = within(attempts).getAllByRole('row')[1]!
+    expect(within(failureRow).getByRole('link', { name: 'View' })).toHaveAttribute(
+      'href',
+      `/o/o1/operations/deliveries/${DELIVERY_A}`,
+    )
+    expect(within(attemptRow).getByRole('link', { name: 'View' })).toHaveAttribute(
+      'href',
+      `/o/o1/operations/deliveries/${DELIVERY_A}`,
+    )
+    expect(
+      within(failureRow).getByRole('button', { name: /copy delivery id/i }),
+    ).toBeInTheDocument()
+  })
+
   it('lists Activity next to Queue and opens the page from the navigation', async () => {
     const { user } = open({}, '/o/o1')
     const nav = await screen.findByRole('navigation', { name: 'Main navigation' })
@@ -349,7 +372,14 @@ describe('failure feed', () => {
     ).toBeInTheDocument()
     expect(within(rows[1]!).getByText('Not recorded')).toBeInTheDocument()
     expect(within(rows[1]!).getAllByText('—').length).toBeGreaterThan(0)
-    expect(within(rows[1]!).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(rows[0]!).getByRole('link', { name: 'View' })).toHaveAttribute(
+      'href',
+      `/o/o1/operations/deliveries/${DELIVERY_A}`,
+    )
+    expect(within(rows[1]!).getByRole('link', { name: 'View' })).toHaveAttribute(
+      'href',
+      `/o/o1/operations/deliveries/${DELIVERY_B}`,
+    )
   })
 
   it('says that a redriven delivery leaves the list', async () => {

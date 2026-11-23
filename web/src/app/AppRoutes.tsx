@@ -3,6 +3,7 @@ import { PublicOnly, RequireAuth } from '../auth/guards'
 import { LoginPage } from '../features/auth/LoginPage'
 import { RegisterPage } from '../features/auth/RegisterPage'
 import { ActivityPage } from '../features/operations/ActivityPage'
+import { DeliveryDetailPage } from '../features/deliveries/DeliveryDetailPage'
 import { QueuePage } from '../features/operations/QueuePage'
 import { OrgPickerPage } from '../features/orgs/OrgPickerPage'
 import { OverviewPage } from '../features/orgs/OverviewPage'
@@ -25,6 +26,7 @@ export function AppRoutes() {
             <Route index element={<OverviewPage />} />
             <Route path="operations/queue" element={<QueuePage />} />
             <Route path="operations/activity" element={<ActivityPage />} />
+            <Route path="operations/deliveries/:deliveryId" element={<DeliveryDetailPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
           <Route path="*" element={<NotFoundPage />} />

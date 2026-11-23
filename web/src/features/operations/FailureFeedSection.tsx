@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { getFailures } from '../../api/operations'
 import type { FailureItem } from '../../api/operationsTypes'
 import { filtersKey } from '../../lib/activityQuery'
@@ -182,7 +183,14 @@ export function FailureFeedSection({
                 <td className="num">{item.attemptCount.toLocaleString('en-US')}</td>
                 <td>{lastResult(item)}</td>
                 <td>
-                  <CopyText value={item.deliveryId} what="Delivery ID" />
+                  <span className="delivery-cell">
+                    <CopyText value={item.deliveryId} what="Delivery ID" />
+                    <Link
+                      to={`/o/${orgId}/operations/deliveries/${encodeURIComponent(item.deliveryId)}`}
+                    >
+                      View
+                    </Link>
+                  </span>
                 </td>
                 <td>
                   <Button

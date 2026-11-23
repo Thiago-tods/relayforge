@@ -476,8 +476,16 @@ read-only, need `deliveries:read` and run under the API's five-second read deadl
   which holds every attempt of the delivery (they all start between those two instants), including the episodes of a
   redriven delivery. The attempt feed spans at most 31 days, so a longer lifetime is clamped to the 31 days that end at
   the latest completion and the page says that older attempts are excluded. A truncated result is never presented as
-  the complete history. Only the delivery detail endpoint returns every attempt, and its page is a later phase.
+  the complete history. The delivery detail page returns the recorded attempts for one delivery, without the attempt feed’s 31-day window limit. Because the API reads attempts before the delivery row, an attempt appended concurrently by a worker can appear after a later refresh.
 - **Ignored link values** are reported once and dropped from the URL when the user applies a section or presses "Clear
   ignored filters" (`normalizedParams` in `web/src/lib/activityQuery.ts`).
 - **Unverified compatibility**: the API sends microsecond timestamps and the page reads them with `new Date`. This is
   verified in Chromium only. Safari and Firefox have not been checked.
+
+### Delivery detail (web/, Phase F1c)
+
+- **Route** (`/o/:orgId/operations/deliveries/:deliveryId`) reads the existing `GET /api/v1/organizations/{organizationID}/deliveries/{deliveryID}` endpoint. The backend authorizes `deliveries:read` and scopes both the delivery and its attempts to the organization.
+- **Displayed fields** are operational metadata only: delivery/event/destination identifiers and destination name, status, attempt budget, failure details, relevant timestamps, and stored attempt outcomes. The page never requests or displays event payloads, destination URLs, signing secrets, claim tokens, worker IDs, or leases.
+- **Attempt history** is returned in ascending attempt-number order by the API and presented newest first. A worker append concurrent with the read may appear only after refresh. Episode boundaries are derived only from stored `terminalReason` markers; an unmarked group remains explicitly unclassified. `ABANDONED` is described as an attempt the worker did not finish, not as a destination failure.
+- **Fetching** uses `useResource` scoped to organization and delivery ID. It fetches once on entry, aborts on unmount or scope change, hides data from the previous scope, and offers explicit refresh/retry. There is no polling and no mutation control.
+- Delivery IDs in both Activity feeds link to the detail route. The existing **Show attempts** action remains available.
