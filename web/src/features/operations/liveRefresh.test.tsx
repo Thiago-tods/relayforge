@@ -334,11 +334,17 @@ describe('activity page: scheduled refresh', () => {
     newest: number
     probeFails: boolean
     summaryFails: boolean
+    /** The first page of the failure feed (no cursor, not a probe) fails, as a reload to the newest page would. */
+    firstPageFails: boolean
+    /** Holds the answer of that first page until the test releases it. */
+    firstPageGate: Promise<void> | null
   }
   const world = (over: Partial<World> = {}): World => ({
     newest: 9,
     probeFails: false,
     summaryFails: false,
+    firstPageFails: false,
+    firstPageGate: null,
     ...over,
   })
 
@@ -348,7 +354,11 @@ describe('activity page: scheduled refresh', () => {
         state.summaryFails
           ? apiError(500, 'internal_error', 'internal error')
           : json(200, deliverySummary()),
-      [FAILURES]: (q) => {
+      [FAILURES]: async (q) => {
+        if (q.get('limit') !== '1' && !q.has('cursor')) {
+          if (state.firstPageGate) await state.firstPageGate
+          if (state.firstPageFails) return apiError(500, 'internal_error', 'internal error')
+        }
         if (q.get('limit') === '1') {
           return state.probeFails
             ? apiError(500, 'internal_error', 'internal error')
@@ -444,6 +454,66 @@ describe('activity page: scheduled refresh', () => {
       .map(queryOf)
       .filter((q) => q.limit === '25')
     expect(firstPages.at(-1)).toEqual({ limit: '25', failureReason: 'RETRIES_EXHAUSTED' })
+  })
+
+  it('moves focus to the feed heading once "Show newest" has loaded the newest page', async () => {
+    const release = gate<void>()
+    const state = world()
+    const { user } = open(server(state), activityPath)
+    await loaded()
+    const region = failuresRegion()
+    state.newest = 12
+    expect(await within(region).findByText('New activity available.')).toBeInTheDocument()
+    const heading = within(region).getByRole('heading', { name: 'Recent failures' })
+    // A heading that can be focused by a script is not a tab stop.
+    expect(heading).toHaveAttribute('tabindex', '-1')
+
+    // Reached and activated with the keyboard, while the read of the newest page is held back.
+    state.firstPageGate = release.promise
+    const button = within(region).getByRole('button', { name: 'Show newest' })
+    button.focus()
+    expect(button).toHaveFocus()
+    await user.keyboard('{Enter}')
+    await pass(INTERVAL / 5)
+    // Nothing moves focus before the refresh has completed.
+    expect(heading).not.toHaveFocus()
+
+    await act(async () => release.release())
+    await waitFor(() => expect(within(region).getByText('Hook 12')).toBeInTheDocument())
+    await waitFor(() => expect(heading).toHaveFocus())
+    expect(within(region).queryByText('New activity available.')).not.toBeInTheDocument()
+    expect(within(region).getByText('Page 1')).toBeInTheDocument()
+    // The existing announcement is still made, and the heading is still not a tab stop.
+    expect(
+      within(region)
+        .getAllByRole('status')
+        .some((node) => node.textContent === 'Page 1 loaded, 2 rows.'),
+    ).toBe(true)
+    expect(heading).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('does not take focus when the refresh behind "Show newest" fails', async () => {
+    const state = world()
+    const { user } = open(server(state), activityPath)
+    await loaded()
+    const region = failuresRegion()
+    state.newest = 12
+    expect(await within(region).findByText('New activity available.')).toBeInTheDocument()
+    const heading = within(region).getByRole('heading', { name: 'Recent failures' })
+
+    state.firstPageFails = true
+    const button = within(region).getByRole('button', { name: 'Show newest' })
+    button.focus()
+    await user.keyboard('{Enter}')
+    expect(await within(region).findByRole('alert')).toBeInTheDocument()
+    await pass(INTERVAL / 2)
+    expect(heading).not.toHaveFocus()
+    // What was shown stays, and a later successful refresh is not mistaken for that click.
+    expect(within(region).getByText('Hook 9')).toBeInTheDocument()
+    state.firstPageFails = false
+    await user.click(within(region).getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(within(region).getByText('Hook 12')).toBeInTheDocument())
+    expect(heading).not.toHaveFocus()
   })
 
   it('does not report an entry that is already held', async () => {

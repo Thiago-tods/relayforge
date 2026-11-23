@@ -68,7 +68,16 @@ export function FeedFrame<T>({
       {newActivity.available ? (
         <div className="notice new-activity">
           <p>New activity available.</p>
-          <Button onClick={feed.refresh}>Show newest</Button>
+          <Button
+            onClick={() => {
+              // The notice disappears once the newest page is shown, and the button with it. Like Previous and
+              // Next, focus then moves to the heading, but only if the refresh succeeded.
+              moved.current = true
+              feed.refresh()
+            }}
+          >
+            Show newest
+          </Button>
         </div>
       ) : newActivity.failed ? (
         <p className="notice">{NEW_ACTIVITY_CHECK_FAILED}</p>
