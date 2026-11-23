@@ -22,3 +22,7 @@ web/dist/
 .DS_Store
 Thumbs.db
 .claude/
+
+# Generated review packages (see tools/Prepare-ReviewHandoff.ps1)
+review-handoff/*
+!review-handoff/README.md
