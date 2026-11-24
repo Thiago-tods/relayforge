@@ -41,7 +41,7 @@ jobs:
       RELAYFORGE_TEST_NATS_URL: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Start NATS JetStream (disposable, test-only)
