@@ -4,6 +4,8 @@ import { LoginPage } from '../features/auth/LoginPage'
 import { RegisterPage } from '../features/auth/RegisterPage'
 import { DestinationDetailPage } from '../features/destinations/DestinationDetailPage'
 import { DestinationsPage } from '../features/destinations/DestinationsPage'
+import { SubscriptionDetailPage } from '../features/subscriptions/SubscriptionDetailPage'
+import { SubscriptionsPage } from '../features/subscriptions/SubscriptionsPage'
 import { ActivityPage } from '../features/operations/ActivityPage'
 import { DeliveryDetailPage } from '../features/deliveries/DeliveryDetailPage'
 import { QueuePage } from '../features/operations/QueuePage'
@@ -31,6 +33,8 @@ export function AppRoutes() {
             <Route path="operations/deliveries/:deliveryId" element={<DeliveryDetailPage />} />
             <Route path="destinations" element={<DestinationsPage />} />
             <Route path="destinations/:destinationId" element={<DestinationDetailPage />} />
+            <Route path="subscriptions" element={<SubscriptionsPage />} />
+            <Route path="subscriptions/:subscriptionId" element={<SubscriptionDetailPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
           <Route path="*" element={<NotFoundPage />} />

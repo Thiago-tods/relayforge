@@ -1098,3 +1098,28 @@ a {
 .destinations-table th[scope='row'] {
   font-weight: 600;
 }
+
+/* Subscriptions (F3b) */
+.subscription-filters {
+  align-items: flex-start;
+  margin-bottom: var(--space);
+}
+.paged-select {
+  min-width: 0;
+}
+.paged-select .field {
+  margin-bottom: 0.4rem;
+}
+.paged-select select {
+  max-width: 100%;
+}
+.paged-select-actions {
+  margin-bottom: var(--space);
+  font-size: 0.9rem;
+}
+.dialog-body .paged-select-actions {
+  margin-bottom: 0.75rem;
+}
+.subscription-filters .paged-select-actions {
+  margin-bottom: 0;
+}

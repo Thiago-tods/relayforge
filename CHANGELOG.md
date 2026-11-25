@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F3b: subscription management in the web UI)
+
+- `web/`: the Subscriptions pages at `/o/:orgId/subscriptions` (list) and `/o/:orgId/subscriptions/:subscriptionId`
+  (detail). The "Subscriptions (coming soon)" label in the Configuration sidebar group is now a real link next to
+  Destinations (shown with `subscriptions:read`).
+- List: ingestion endpoint (name), destination, a "Destination status" and a separate "Subscription status", created and
+  revoked times, filters for subscription status, ingestion endpoint and destination (in the URL), the existing offset
+  pagination with its exact total, and loading, empty, error and success states. There is no polling.
+- Create (OWNER, ADMIN, DEVELOPER): choose an ingestion endpoint and a destination from paginated "Load more" lists
+  (100 at a time). REVOKED ones are not offered; PAUSED ones are, labelled. Before sending, the page reads whether an
+  ACTIVE subscription for the pair exists and, if so, links to it instead of sending; the server stays authoritative
+  (`already_subscribed`, `endpoint_revoked`, `destination_revoked`, 404).
+- Detail: the relationship (endpoint and destination, each read separately and each allowed to fail without breaking the
+  page), both statuses explained apart, the interval, and the other intervals of the same endpoint and destination
+  pair. Revoke (OWNER, ADMIN, DEVELOPER) asks for an explicit acknowledgment and says that it is permanent, that
+  re-subscribing creates a new record, and that events accepted while it was active stay eligible for delivery.
+- The subscription answer has no endpoint name, so the list reads exactly the endpoints of the rows on screen with the
+  existing `GET .../ingestion-endpoints/{id}` (at most five at a time) and falls back to a short id. `createdByUserId` is
+  validated but never shown.
+- A mutation is sent once. A lost connection, a 30 second timeout, a 5xx or an unreadable 2xx is an unknown result: the
+  page reads the pair (create) or the subscription (revoke) once and never repeats the request.
+- `web/src/api/subscriptions.ts` and the read-only `web/src/api/ingestionEndpoints.ts` validate every answer strictly.
+- Frontend only: no backend change, no migration, no new dependency. F3a's `useDestinationMutation` and F1's
+  `DestinationSelect` are unchanged.
+
 ### Added (Phase F3a: destination management in the web UI)
 
 - `web/`: the Destinations pages at `/o/:orgId/destinations` (list) and `/o/:orgId/destinations/:destinationId` (detail),

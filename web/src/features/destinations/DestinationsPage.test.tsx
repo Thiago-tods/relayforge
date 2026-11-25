@@ -205,7 +205,7 @@ describe('destinations list', () => {
 
 describe('destinations navigation', () => {
   it.each(['OWNER', 'ADMIN', 'DEVELOPER', 'VIEWER'] as const)(
-    '%s sees the Configuration group with a Destinations link and a non-link Subscriptions label',
+    '%s sees the Configuration group with a Destinations link and a Subscriptions link (F3b)',
     async (role) => {
       mountDestinations(PAGE, {
         role,
@@ -217,8 +217,12 @@ describe('destinations navigation', () => {
         'href',
         '/o/o1/destinations',
       )
-      expect(within(group).getByText(/Subscriptions/)).toBeInTheDocument()
-      expect(within(group).queryByRole('link', { name: /Subscriptions/ })).not.toBeInTheDocument()
+      // F3b made Subscriptions a real link (it was a "coming soon" label in F3a); Destinations is unchanged.
+      expect(within(group).getByRole('link', { name: 'Subscriptions' })).toHaveAttribute(
+        'href',
+        '/o/o1/subscriptions',
+      )
+      expect(within(group).queryByText(/coming soon/)).not.toBeInTheDocument()
     },
   )
 })
