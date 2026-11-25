@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F3a: destination management in the web UI)
+
+- `web/`: the Destinations pages at `/o/:orgId/destinations` (list) and `/o/:orgId/destinations/:destinationId` (detail),
+  under a new "Configuration" sidebar group (shown with `destinations:read`). "Subscriptions" in that group is a
+  non-link "coming soon" label: the page belongs to a later phase.
+- List: name, URL without its query, status, created and updated, filter All, Active, Paused or Revoked (in the URL),
+  the existing offset pagination with its exact total, and loading, empty, error and success states. Switching
+  organization never shows another organization's rows.
+- Create (name up to 100 characters, URL; the backend validates both and applies the SSRF policy), rename, change URL,
+  pause, activate, rotate the signing secret and revoke, each behind its own dialog and the permission of ADR 27
+  (OWNER and ADMIN everything; DEVELOPER create, update, pause and activate; VIEWER read only). A 403 hides the
+  controls. The change-URL field starts empty because the stored query string is never shown; revoke needs an
+  acknowledgment and nothing is sent before a dialog is confirmed.
+- A signing secret (create and rotate) is shown once in a dialog that Escape cannot close: it needs an acknowledgment
+  and has a copy button. It exists only in component state: never in storage, the URL, a toast or an accessible name,
+  and it is discarded when the dialog closes or the organization changes.
+- A mutation is sent once. A lost connection, a 30 second timeout, a 5xx or an unreadable 2xx (`unreadable_success`)
+  is an unknown result: the page says so, reads the destination (or the list) once and never repeats the request. A lost
+  create or rotate answer means a lost secret, and the page says to rotate.
+- `web/src/api/destinations.ts` keeps F1's `listDestinations` unchanged and adds `listDestinationRecords`,
+  `getDestination`, `createDestination`, `updateDestination`, `pauseDestination`, `activateDestination`,
+  `rotateDestinationSecret` and `revokeDestination` with strict response validation.
+- Frontend only: no backend change, no migration, no new dependency.
+
 ### Added (Phase F2: delivery redrive in the web UI)
 
 - `web/`: the delivery detail page offers **Redrive** for a `FAILED` delivery to users with `deliveries:redrive` (OWNER,

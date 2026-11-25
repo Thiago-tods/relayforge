@@ -16,6 +16,7 @@ export function Shell() {
   // This only decides which links to show; the backend authorizes every request.
   const role = organizations.find((o) => o.id === orgId)?.role
   const showOperations = can(role, 'deliveries:read')
+  const showConfiguration = can(role, 'destinations:read')
   // The drawer is open only for the page it was opened on, so navigating closes it without an effect.
   const [openOn, setOpenOn] = useState<string | null>(null)
   const menuOpen = openOn === location.pathname
@@ -124,6 +125,18 @@ export function Shell() {
               </p>
               <NavLink to={`/o/${orgId}/operations/queue`}>Queue</NavLink>
               <NavLink to={`/o/${orgId}/operations/activity`}>Activity</NavLink>
+            </div>
+          ) : null}
+          {orgId !== '' && showConfiguration ? (
+            <div role="group" aria-labelledby="nav-configuration" className="nav-group">
+              <p id="nav-configuration" className="nav-group-label">
+                Configuration
+              </p>
+              <NavLink to={`/o/${orgId}/destinations`}>Destinations</NavLink>
+              {/* Subscriptions arrive in a later phase: a label, not a link, so nothing leads nowhere. */}
+              <span className="nav-soon" aria-disabled="true">
+                Subscriptions <span className="nav-soon-note">(coming soon)</span>
+              </span>
             </div>
           ) : null}
         </nav>

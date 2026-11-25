@@ -640,6 +640,9 @@ a {
 .table-scroll {
   overflow-x: auto;
   max-width: 100%;
+  /* Containing block for the absolutely positioned .visually-hidden cells (such as the Actions column header), so
+     they are clipped by this scroll container instead of widening the page. */
+  position: relative;
 }
 
 .age-table {
@@ -997,4 +1000,101 @@ a {
   .redrive-facts dd {
     margin-bottom: 0.55rem;
   }
+}
+
+/* Destinations (F3a) */
+.nav-soon {
+  padding: 0.45rem 0.75rem;
+  color: var(--muted);
+  cursor: default;
+}
+.nav-soon-note {
+  font-size: 0.8rem;
+}
+.status-active {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success);
+}
+.status-paused {
+  color: var(--text);
+  background: var(--info-bg);
+  border-color: var(--accent);
+}
+.status-revoked {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+.destination-url {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.destination-notice {
+  margin-top: 1rem;
+}
+.filter-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+.filter-row .field {
+  margin-bottom: 0;
+}
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.security-list {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+.security-list li + li {
+  margin-top: 0.5rem;
+}
+.security-list li.notice {
+  list-style: none;
+  margin-inline-start: -1.25rem;
+}
+.dialog-text p {
+  margin-top: 0;
+}
+.dialog-notes {
+  margin: 0 0 1rem;
+  padding-inline-start: 1.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+.ack input {
+  margin-top: 0.25rem;
+}
+.secret-box {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.secret-box code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+}
+.secret-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+}
+.destinations-table th[scope='row'] {
+  font-weight: 600;
 }
