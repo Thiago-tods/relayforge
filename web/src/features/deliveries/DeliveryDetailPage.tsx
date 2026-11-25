@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { getDeliveryDetail } from '../../api/deliveries'
+import type { DeliveryDetail } from '../../api/deliveryTypes'
 import { userMessage, isApiError } from '../../api/errors'
 import { useResource } from '../../lib/useResource'
 import { useOrg } from '../../org/orgContext'
@@ -8,6 +10,10 @@ import { CopyText } from '../../ui/CopyText'
 import { DateTime } from '../../ui/DateTime'
 import { ErrorState, LoadingState } from '../../ui/states'
 import { groupAttemptEpisodes } from './attemptEpisodes'
+import { RedriveBanner } from './RedriveBanner'
+import { RedriveDialog } from './RedriveDialog'
+import { budgetLooksExhausted, MAX_ATTEMPTS_CEILING, noticeFor } from './redriveOutcome'
+import { useRedrive } from './useRedrive'
 
 function optional(value: string | number | null): string | number {
   return value === null || value === '' ? '—' : value
@@ -31,15 +37,59 @@ function detailError(error: unknown): { title: string; message: string } {
 }
 
 export function DeliveryDetailPage() {
-  const { organization } = useOrg()
+  const { organization, can } = useOrg()
   const { deliveryId = '' } = useParams()
   const orgId = organization.id
   const resource = useResource(`${orgId}:${deliveryId}`, (signal) =>
     getDeliveryDetail(orgId, deliveryId, signal),
   )
-  const detail = resource.data
+  const loaded = resource.data
+
+  // A detail the redrive flow read itself (the follow-up or verification GET) is shown instead of the loaded one,
+  // until the resource settles a newer load. That avoids a second GET for the same information.
+  const [fresh, setFresh] = useState<{
+    base: DeliveryDetail | null
+    detail: DeliveryDetail
+  } | null>(null)
+  const loadedRef = useRef(loaded)
+  useEffect(() => {
+    loadedRef.current = loaded
+  })
+  const showFresh = (next: DeliveryDetail) => setFresh({ base: loadedRef.current, detail: next })
+  const detail =
+    fresh !== null &&
+    fresh.base === loaded &&
+    fresh.detail.delivery.id === deliveryId &&
+    fresh.detail.delivery.organizationId === orgId
+      ? fresh.detail
+      : loaded
+
+  const mayRedrive = can('deliveries:redrive')
+  const redrive = useRedrive({ orgId, deliveryId, allowed: mayRedrive, onFresh: showFresh })
+  const flow = redrive.flow
+  const notice = noticeFor(flow)
+  const bannerHeading = useRef<HTMLHeadingElement>(null)
+  // When the dialog closes with a result the trigger may be gone, so focus moves to the result heading.
+  useEffect(() => {
+    if (flow.phase === 'outcome' || flow.phase === 'checking' || flow.phase === 'unverified') {
+      bannerHeading.current?.focus()
+    }
+  }, [flow.phase, notice?.title])
+
   const back = `/o/${orgId}/operations/activity`
   const episodes = detail === null ? [] : groupAttemptEpisodes(detail.attempts)
+  // The action is only for a FAILED delivery, only with deliveries:redrive, and not while a redrive is unresolved.
+  const actionVisible =
+    detail !== null &&
+    mayRedrive &&
+    !redrive.permissionLost &&
+    detail.delivery.status === 'FAILED' &&
+    flow.phase !== 'checking' &&
+    flow.phase !== 'unverified' &&
+    // After an accepted redrive the shown detail is out of date until it is refreshed: do not offer a second one.
+    !(flow.phase === 'outcome' && flow.outcome.tone === 'success')
+  const announcement =
+    notice !== null && notice.tone !== 'error' ? `${notice.title}. ${notice.message}` : ''
 
   return (
     <div className="page delivery-detail-page">
@@ -61,7 +111,36 @@ export function DeliveryDetailPage() {
               </span>
             </div>
             <CopyText value={detail.delivery.id} what="Delivery ID" />
+            {actionVisible ? (
+              <div className="redrive-action">
+                {budgetLooksExhausted(detail.delivery.maxAttempts) ? (
+                  <p className="muted">
+                    This delivery already has the maximum retry budget ({MAX_ATTEMPTS_CEILING}{' '}
+                    attempts), so it cannot be redriven again.
+                  </p>
+                ) : (
+                  <Button variant="secondary" onClick={() => redrive.open(detail.delivery)}>
+                    Redrive…
+                  </Button>
+                )}
+              </div>
+            ) : null}
           </header>
+          {mayRedrive ? (
+            <p className="visually-hidden" role="status" data-testid="redrive-live">
+              {announcement}
+            </p>
+          ) : null}
+          <RedriveBanner flow={flow} headingRef={bannerHeading} onCheckAgain={redrive.checkAgain} />
+          {flow.phase === 'confirming' || flow.phase === 'submitting' ? (
+            <RedriveDialog
+              snapshot={flow.snapshot}
+              submitting={flow.phase === 'submitting'}
+              error={redrive.dialogError}
+              onSubmit={redrive.submit}
+              onCancel={redrive.cancel}
+            />
+          ) : null}
           {resource.error !== null ? (
             <p className="notice" role="status">
               The refresh failed. The last loaded detail is still shown.{' '}

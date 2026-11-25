@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F2: delivery redrive in the web UI)
+
+- `web/`: the delivery detail page offers **Redrive** for a `FAILED` delivery to users with `deliveries:redrive` (OWNER,
+  ADMIN, DEVELOPER). A VIEWER gets no control and no dialog. A delivery that is not `FAILED` gets none, and a delivery whose
+  budget is already 50 shows an explanation instead. The destination status is not requested: `409 destination_revoked`
+  is the authoritative rejection, and a paused destination is only described in the dialog, never detected.
+- A native `<dialog>` (`showModal()`) asks for a required single-line reason and explains at-least-once delivery, the
+  advisory budget change (8 to 13, capped at 50), asynchronous processing and the audit log. The attempt count it sends
+  is the one shown when the dialog opened. The reason and budget checks are advisory: Confirm is never disabled by them
+  and the server's answer (including `validation_failed`) is shown inline. The server's `redrive` budget figures
+  replace the estimate after success.
+- One confirmation sends one POST with a 30 second client timeout. The POST is never repeated by the UI (the client's
+  existing single retry after `csrf_invalid` is unchanged). A lost connection, a timeout, a generic or proxy 5xx, or an
+  HTTP 200 with an unreadable or inconsistent body (`unreadable_success`) is an ambiguous outcome: the UI says the
+  redrive may or may not have been applied, reads the delivery once, compares it with the snapshot taken when the dialog
+  opened, and never claims that this request caused a change. If that read fails it shows "State unverified" with a "Check
+  again" action (a GET). Redrive stays hidden until a check succeeds. Leaving the page or switching organization stops
+  the work and starts no check.
+- Known rejections (`delivery_not_failed`, `delivery_changed`, `destination_revoked`, `retry_budget_exhausted`,
+  `event_payload_unavailable`, `lock_timeout`, 403, 404) have their own messages. After success the page shows a banner and
+  reads the delivery once.
+- `web/src/ui/Dialog.tsx` is the first dialog primitive. jsdom has no `showModal`, so `web/src/test/setup.ts` adds a
+  minimal stand-in; focus trapping and inertness are verified in a real browser, not in the unit tests.
+- Frontend only: no backend change, no migration, no new dependency, no worker, retry, lease or recovery change.
+
 ### Added (Phase F1b: delivery activity and feeds)
 
 - `web/`: the Activity page at `/o/:orgId/operations/activity` (sidebar entry "Activity" in the Operations group).

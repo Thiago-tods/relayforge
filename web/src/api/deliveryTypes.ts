@@ -32,3 +32,21 @@ export interface DeliveryDetail {
   delivery: DeliveryRecord
   attempts: DeliveryAttempt[]
 }
+
+/** Body of POST /organizations/{organizationID}/deliveries/{deliveryID}/redrive (ADR 34). */
+export interface RedriveRequest {
+  reason: string
+  expectedAttemptCount: number
+}
+
+/**
+ * A successful redrive. The budget figures are the server's: they are authoritative and replace any estimate the
+ * UI showed before the request.
+ */
+export interface RedriveResult {
+  delivery: DeliveryRecord
+  previousMaxAttempts: number
+  maxAttempts: number
+  /** Null for a delivery that failed before failure reasons were recorded. */
+  previousFailureReason: string | null
+}

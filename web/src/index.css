@@ -916,3 +916,85 @@ a {
     margin-bottom: 0.55rem;
   }
 }
+
+/* Redrive (delivery detail) */
+.redrive-action {
+  margin-top: 0.75rem;
+}
+.redrive-banner {
+  margin-top: 1rem;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--border);
+  border-inline-start-width: 4px;
+  border-radius: var(--radius);
+  background: var(--info-bg);
+}
+.redrive-banner-success {
+  background: var(--success-bg);
+  border-inline-start-color: var(--success);
+}
+.redrive-banner-error {
+  background: var(--danger-bg);
+  border-inline-start-color: var(--danger);
+}
+.redrive-banner h2 {
+  margin-bottom: 0.35rem;
+  font-size: 1rem;
+}
+.redrive-banner p {
+  margin: 0 0 0.5rem;
+}
+.redrive-banner h2:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.dialog {
+  width: min(100% - 2rem, 36rem);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  padding: 1.25rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.dialog::backdrop {
+  background: rgb(0 0 0 / 50%);
+}
+.dialog-body h2 {
+  margin-top: 0;
+}
+.redrive-facts {
+  margin-bottom: 1rem;
+}
+.redrive-notes {
+  margin: 0 0 1rem;
+  padding-inline-start: 1.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.redrive-notes li + li {
+  margin-top: 0.35rem;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+@media (max-width: 36rem) {
+  .dialog {
+    padding: 1rem;
+  }
+  .dialog-actions .btn {
+    flex: 1 1 100%;
+  }
+  .redrive-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+  }
+  .redrive-facts dd {
+    margin-bottom: 0.55rem;
+  }
+}
