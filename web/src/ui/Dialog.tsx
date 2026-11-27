@@ -12,6 +12,11 @@ interface DialogProps {
   dismissible?: boolean
   /** The element that receives focus when the dialog opens. Defaults to the first focusable element. */
   initialFocus?: RefObject<HTMLElement | null>
+  /**
+   * Called when the browser closes the dialog by itself while it is mounted (an unexpected native close). A normal
+   * unmount does not fire it. The owner should discard whatever the dialog shows.
+   */
+  onUnexpectedClose?: () => void
   children: ReactNode
 }
 
@@ -30,9 +35,14 @@ export function Dialog({
   onClose,
   dismissible = true,
   initialFocus,
+  onUnexpectedClose,
   children,
 }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
+  const unexpectedClose = useRef(onUnexpectedClose)
+  useEffect(() => {
+    unexpectedClose.current = onUnexpectedClose
+  })
 
   useEffect(() => {
     const dialog = ref.current
@@ -41,7 +51,10 @@ export function Dialog({
     if (!dialog.open) dialog.showModal()
     const target = initialFocus?.current ?? dialog.querySelector<HTMLElement>(FOCUSABLE)
     target?.focus()
+    const onNativeClose = () => unexpectedClose.current?.()
+    dialog.addEventListener('close', onNativeClose)
     return () => {
+      dialog.removeEventListener('close', onNativeClose)
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus()
     }
     // Opening happens once per mount; later changes of the focus target must not steal focus.

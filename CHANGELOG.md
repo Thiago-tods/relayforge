@@ -6,6 +6,55 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (Phase F3b: subscription management in the web UI)
+
+- `web/`: the Subscriptions pages at `/o/:orgId/subscriptions` (list) and `/o/:orgId/subscriptions/:subscriptionId`
+  (detail). The "Subscriptions (coming soon)" label in the Configuration sidebar group is now a real link next to
+  Destinations (shown with `subscriptions:read`).
+- List: ingestion endpoint (name), destination, a "Destination status" and a separate "Subscription status", created and
+  revoked times, filters for subscription status, ingestion endpoint and destination (in the URL), the existing offset
+  pagination with its exact total, and loading, empty, error and success states. There is no polling.
+- Create (OWNER, ADMIN, DEVELOPER): choose an ingestion endpoint and a destination from paginated "Load more" lists
+  (100 at a time). REVOKED ones are not offered; PAUSED ones are, labelled. Before sending, the page reads whether an
+  ACTIVE subscription for the pair exists and, if so, links to it instead of sending; the server stays authoritative
+  (`already_subscribed`, `endpoint_revoked`, `destination_revoked`, 404).
+- Detail: the relationship (endpoint and destination, each read separately and each allowed to fail without breaking the
+  page), both statuses explained apart, the interval, and the other intervals of the same endpoint and destination
+  pair. Revoke (OWNER, ADMIN, DEVELOPER) asks for an explicit acknowledgment and says that it is permanent, that
+  re-subscribing creates a new record, and that events accepted while it was active stay eligible for delivery.
+- The subscription answer has no endpoint name, so the list reads exactly the endpoints of the rows on screen with the
+  existing `GET .../ingestion-endpoints/{id}` (at most five at a time) and falls back to a short id. `createdByUserId` is
+  validated but never shown.
+- A mutation is sent once. A lost connection, a 30 second timeout, a 5xx or an unreadable 2xx is an unknown result: the
+  page reads the pair (create) or the subscription (revoke) once and never repeats the request.
+- `web/src/api/subscriptions.ts` and the read-only `web/src/api/ingestionEndpoints.ts` validate every answer strictly.
+- Frontend only: no backend change, no migration, no new dependency. F3a's `useDestinationMutation` and F1's
+  `DestinationSelect` are unchanged.
+
+### Added (Phase F3a: destination management in the web UI)
+
+- `web/`: the Destinations pages at `/o/:orgId/destinations` (list) and `/o/:orgId/destinations/:destinationId` (detail),
+  under a new "Configuration" sidebar group (shown with `destinations:read`). "Subscriptions" in that group is a
+  non-link "coming soon" label: the page belongs to a later phase.
+- List: name, URL without its query, status, created and updated, filter All, Active, Paused or Revoked (in the URL),
+  the existing offset pagination with its exact total, and loading, empty, error and success states. Switching
+  organization never shows another organization's rows.
+- Create (name up to 100 characters, URL; the backend validates both and applies the SSRF policy), rename, change URL,
+  pause, activate, rotate the signing secret and revoke, each behind its own dialog and the permission of ADR 27
+  (OWNER and ADMIN everything; DEVELOPER create, update, pause and activate; VIEWER read only). A 403 hides the
+  controls. The change-URL field starts empty because the stored query string is never shown; revoke needs an
+  acknowledgment and nothing is sent before a dialog is confirmed.
+- A signing secret (create and rotate) is shown once in a dialog that Escape cannot close: it needs an acknowledgment
+  and has a copy button. It exists only in component state: never in storage, the URL, a toast or an accessible name,
+  and it is discarded when the dialog closes or the organization changes.
+- A mutation is sent once. A lost connection, a 30 second timeout, a 5xx or an unreadable 2xx (`unreadable_success`)
+  is an unknown result: the page says so, reads the destination (or the list) once and never repeats the request. A lost
+  create or rotate answer means a lost secret, and the page says to rotate.
+- `web/src/api/destinations.ts` keeps F1's `listDestinations` unchanged and adds `listDestinationRecords`,
+  `getDestination`, `createDestination`, `updateDestination`, `pauseDestination`, `activateDestination`,
+  `rotateDestinationSecret` and `revokeDestination` with strict response validation.
+- Frontend only: no backend change, no migration, no new dependency.
+
 ### Added (Phase F2: delivery redrive in the web UI)
 
 - `web/`: the delivery detail page offers **Redrive** for a `FAILED` delivery to users with `deliveries:redrive` (OWNER,

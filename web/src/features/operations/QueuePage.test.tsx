@@ -338,12 +338,13 @@ describe('navigation', () => {
         .getAllByRole('link')
         .map((l) => l.textContent),
     ).toEqual(['Queue', 'Activity'])
-    // Only real links: no dead entries for pages that do not exist yet.
+    // Only real links: no dead entries for pages that do not exist yet. (F3a added the Configuration > Destinations
+    // link and F3b the Configuration > Subscriptions link.)
     expect(
       within(nav)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['Organizations', 'Overview', 'Queue', 'Activity'])
+    ).toEqual(['Organizations', 'Overview', 'Queue', 'Activity', 'Destinations', 'Subscriptions'])
     await user.click(within(group).getByRole('link', { name: 'Queue' }))
     expect(await screen.findByRole('heading', { name: 'Queue', level: 1 })).toBeInTheDocument()
   })

@@ -513,3 +513,22 @@ read-only, need `deliveries:read` and run under the API's five-second read deadl
 - **No second POST**: only the client's existing `csrf_invalid` retry may repeat the request. An ambiguous outcome is resolved by reading the delivery (a GET, once automatically and again only through "Check again"); a new redrive needs a new dialog and a new reason. A browser's network stack can itself resend a POST after a reset keep-alive connection; the backend's `409 delivery_not_failed` is what makes that safe.
 - **Advisory validation**: the reason checks (trimmed emptiness, 500 code points, C0 controls and DEL) and the `+5, cap 50` budget estimate give early feedback only; the server's answer wins.
 - **Tests** use a stubbed fetch (`DeliveryDetailPage.redrive.test.tsx`, `deliveries.redrive.test.ts`, `redriveReason.test.ts`); they are not end-to-end evidence. Focus trapping and background inertness come from the native `<dialog>` and were checked in a real browser against a mock API, not in jsdom.
+
+### Destination management in the UI (web/, Phase F3a)
+
+- **Routes**: `/o/:orgId/destinations` (`DestinationsPage`) and `/o/:orgId/destinations/:destinationId` (`DestinationDetailPage`), linked from the sidebar group "Configuration". The control visibility follows `can()` for `destinations:read`, `create`, `update`, `pause`, `rotate_secret` and `revoke`; the backend authorizes every request and a 403 hides the controls.
+- **API** (`src/api/destinations.ts`, `destinationTypes.ts`): F1's `listDestinations` (id, name, status only) is unchanged. `listDestinationRecords`, `getDestination` and the six mutations validate the answers: organization and destination ids, status, timestamps, `url` without a query or fragment, `urlHasQuery`, `revokedAt` only for REVOKED, and `signingSecret` present only in the create and rotate answers. A 2xx whose body cannot be trusted is `ApiError(200, 'unreadable_success')`.
+- **One request per confirmation**: `useDestinationMutation` guards a second submit in the same tick, times out after 30 s and classifies the error. Rejections (400, 403, 404, 409, 503 `lock_timeout`) are known; a lost connection, a timeout, a 5xx and an unreadable 2xx are unknown, so the page reads the destination once and never repeats the request. Rotation is not idempotent, which is why it is never repeated.
+- **Secrets**: `DestinationSecretDialog` holds the secret only in props and state; it is not dismissible, has a copy button without the secret in any label or toast, and requires an acknowledgment. Never put a secret in storage, the URL or a log.
+- **URL changes**: the API hides the query string, so the change-URL field starts empty and the full new URL is sent.
+- **Tests** use a stubbed fetch (`destinations.test.ts`, `DestinationsPage.test.tsx`, `DestinationDetailPage.test.tsx`); they are not end-to-end evidence.
+
+### Subscription management in the UI (web/, Phase F3b)
+
+- **Routes**: `/o/:orgId/subscriptions` (`SubscriptionsPage`) and `/o/:orgId/subscriptions/:subscriptionId` (`SubscriptionDetailPage`), linked from the Configuration sidebar group.
+- **API** (`src/api/subscriptions.ts`, `subscriptionTypes.ts`, `ingestionEndpoints.ts`, `ingestionEndpointTypes.ts`): list, get, create and revoke subscriptions, and read-only list and get for ingestion endpoints. Answers are validated strictly (organization, ids, both statuses, `revokedAt` only for REVOKED and not before `createdAt`); a mutation answer that cannot be trusted is `unreadable_success`.
+- **Two statuses**: a subscription's `status` (ACTIVE or REVOKED) describes only its own interval; `destinationStatus` is the destination's. They are separate columns and badges and are never derived from each other.
+- **Endpoint names**: the subscription answer has none, so `useEndpointLookups` reads the distinct endpoints of the visible rows with `GET .../ingestion-endpoints/{id}` and falls back to a short id.
+- **One request per confirmation**: `useSubscriptionMutation` (separate from `useDestinationMutation`) guards a second submit in the same tick, times out after 30 s and classifies the error. After an unknown result the pair (create) or the subscription (revoke) is read once and nothing is sent again.
+- **Revoke is not idempotent** in the backend (`409 subscription_revoked` for a second revoke), so the UI reads the state instead of repeating it.
+- **Tests** use a stubbed fetch (`subscriptions.test.ts`, `ingestionEndpoints.test.ts`, `SubscriptionsPage.test.tsx`, `SubscriptionDetailPage.test.tsx`); they are not end-to-end evidence.
